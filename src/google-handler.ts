@@ -95,6 +95,38 @@ app.get("/icon.png", (c) =>
   }),
 );
 
+// Minimal homepage + privacy policy, required by Google to publish the
+// OAuth consent screen to Production.
+const PAGE = (title: string, body: string) =>
+  `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>` +
+  `<meta name="viewport" content="width=device-width,initial-scale=1"></head>` +
+  `<body style="font-family:system-ui;max-width:640px;margin:40px auto;padding:0 16px;line-height:1.5">` +
+  `<h1>${title}</h1>${body}</body></html>`;
+
+app.get("/", (c) =>
+  c.html(
+    PAGE(
+      "Personal Google Health MCP",
+      "<p>A private, single-user server that lets the owner's Claude connectors read the owner's own Google Health data, read-only. It is not offered to the public.</p>" +
+        '<p><a href="/privacy">Privacy policy</a></p>',
+    ),
+  ),
+);
+
+app.get("/privacy", (c) =>
+  c.html(
+    PAGE(
+      "Privacy policy",
+      "<p>This server is for personal use by its owner only; other accounts are refused.</p>" +
+        "<ul><li>It requests read-only access to Google Health data and the account email.</li>" +
+        "<li>Data is fetched on request and passed only to the owner's MCP client (Claude). It is not sold, shared, or used for advertising.</li>" +
+        "<li>OAuth tokens and a short-lived cache of past-day responses are stored encrypted in the owner's Cloudflare account.</li>" +
+        "<li>Access can be revoked at any time at myaccount.google.com/permissions.</li></ul>" +
+        "<p>Use of information received from Google APIs adheres to the Google API Services User Data Policy, including the Limited Use requirements.</p>",
+    ),
+  ),
+);
+
 // Step 1: Claude hits /authorize. Parse its request, bounce to Google.
 app.get("/authorize", async (c) => {
   const oauthReq = await c.env.OAUTH_PROVIDER.parseAuthRequest(c.req.raw);
