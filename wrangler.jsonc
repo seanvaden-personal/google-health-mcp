@@ -40,7 +40,7 @@
     // grant those, and that tool will simply return a permission error.
     "GOOGLE_OAUTH_SCOPES": "https://www.googleapis.com/auth/googlehealth.health_metrics_and_measurements.readonly https://www.googleapis.com/auth/googlehealth.sleep.readonly https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly https://www.googleapis.com/auth/googlehealth.nutrition.readonly",
     // Public origin of this Worker; used for the connector icon/website advertised to MCP clients.
-    "PUBLIC_URL": "https://REPLACE-WITH-YOUR-WORKER.workers.dev",
+    "PUBLIC_URL": "https://google-health-mcp.seanvaden.workers.dev",
     // IANA timezone used to resolve "today"/"last night" for date defaults.
     "TIME_ZONE": "America/New_York",
     // Exact redirect URIs MCP clients may use (Claude's connector callbacks).
