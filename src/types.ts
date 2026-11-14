@@ -26,4 +26,8 @@ export interface Env {
   PUBLIC_URL: string;
   /** IANA tz used to resolve "today"/"last night" for date defaults. */
   TIME_ZONE: string;
+  /** Comma-separated Google account emails allowed to connect (required). */
+  ALLOWED_EMAILS: string;
+  /** Comma-separated exact redirect URIs allowed for MCP clients (required). */
+  ALLOWED_REDIRECT_URIS: string;
 }
