@@ -16,7 +16,7 @@ describe("daily", () => {
     const skate = { dataPointName: "e1", exercise: { interval: { startTime: "2026-11-10T18:04:43Z", startUtcOffset: "-18000s", endTime: "2026-11-10T19:33:30Z" }, exerciseType: "SKATEBOARDING", activeDuration: "5327.050s" } };
     const rows = buildRows("2026-11-10", "2026-11-13", {
       hrv: [{ dataPoints: [{ dailyHeartRateVariability: { date: { year: 2026, month: 11, day: 13 }, averageHeartRateVariabilityMilliseconds: 29.04 } }] }],
-      rhr: [], sleep: [{ dataPoints: [night] }, { dataPoints: [night] }], exercise: [{ dataPoints: [skate] }],
+      rhr: [], sleep: [{ dataPoints: [night] }, { dataPoints: [night] }], exercise: [{ dataPoints: [skate, { dataPointName: "e2", exercise: { interval: { startTime: "2026-11-10T18:05:00Z", startUtcOffset: "-18000s", endTime: "2026-11-10T19:30:00Z" }, exerciseType: "OTHER", activeDuration: "5100s" } }] }],
       azm: [], steps: [{ rollupDataPoints: [{ civilStartTime: { date: { year: 2026, month: 11, day: 12 } }, steps: { countSum: "7993" } }] }],
       nutrition: [{ rollupDataPoints: [{ civilStartTime: { date: { year: 2026, month: 11, day: 13 } }, nutritionLog: { nutrients: [{ quantity: { gramsSum: 127.78 }, nutrient: "PROTEIN" }], energy: { kcalSum: 1562.875 }, totalCarbohydrate: { gramsSum: 129.6 }, totalFat: { gramsSum: 60.3 } } }] }],
       weight: [{ rollupDataPoints: [{ civilStartTime: { date: { year: 2026, month: 11, day: 10 } }, weight: { weightGramsAvg: 88099 } }] }],
@@ -28,6 +28,7 @@ describe("daily", () => {
     expect(by["2026-11-13"].deep_min).toBe(73);
     expect(by["2026-11-13"].hrv_ms).toBe(29);
     expect(by["2026-11-10"].skate_min).toBe(89);
+    expect(by["2026-11-10"].other_min).toBe(0);
     expect(by["2026-11-10"].weight_lb).toBe(194.2);
     expect(by["2026-11-12"].steps).toBe(7993);
     expect(by["2026-11-13"].kcal_in).toBe(1563);

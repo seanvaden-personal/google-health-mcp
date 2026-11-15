@@ -78,7 +78,8 @@ function points(resp: unknown, key: "dataPoints" | "rollupDataPoints"): Obj[] {
 
 function classify(type: string): "skate" | "lift" | "walk" | "ride" | "other" {
   const t = type.toUpperCase();
-  if (t.includes("SKATE")) return "skate";
+  // Sean's skate sessions are often started as the generic "Sport".
+  if (t.includes("SKATE") || t === "SPORT") return "skate";
   if (t.includes("WEIGHT") || t.includes("STRENGTH")) return "lift";
   if (t.includes("WALK") || t.includes("HIK")) return "walk";
   if (t.includes("BIK") || t.includes("CYCL") || t.includes("SPIN")) return "ride";
@@ -134,15 +135,32 @@ export function buildRows(start: string, end: string, raw: {
     row.deep_min = (row.deep_min ?? 0) + stage("DEEP");
     row.rem_min = (row.rem_min ?? 0) + stage("REM");
   }
+  // Workouts: one session per real activity. Two sources can log the same
+  // activity, so a session that mostly overlaps a longer one is dropped.
+  type Sess = { date: string; start: number; end: number; mins: number; kind: string };
+  const sessions: Sess[] = [];
   for (const p of raw.exercise.flatMap((r) => points(r, "dataPoints"))) {
     const e = p.exercise;
     if (!e?.interval || !once(p, e.interval)) continue;
-    const row = at(localDate(e.interval.startTime, e.interval.startUtcOffset));
-    if (!row) continue;
-    const secs = num(String(e.activeDuration ?? "").replace(/s$/, "")) ??
-      (new Date(e.interval.endTime).getTime() - new Date(e.interval.startTime).getTime()) / 1000;
-    const key = `${classify(String(e.exerciseType ?? ""))}_min` as "skate_min";
-    row[key] = Math.round(row[key] + secs / 60);
+    const date = localDate(e.interval.startTime, e.interval.startUtcOffset);
+    if (!rows.has(date)) continue;
+    const start = new Date(e.interval.startTime).getTime();
+    const end = new Date(e.interval.endTime).getTime();
+    const secs = num(String(e.activeDuration ?? "").replace(/s$/, "")) ?? (end - start) / 1000;
+    sessions.push({ date, start, end, mins: secs / 60, kind: classify(String(e.exerciseType ?? "")) });
+  }
+  sessions.sort((a, b) => b.mins - a.mins);
+  const kept: Sess[] = [];
+  for (const x of sessions) {
+    const dup = kept.some((k) => {
+      const overlap = Math.min(k.end, x.end) - Math.max(k.start, x.start);
+      return overlap > 0.5 * (x.end - x.start);
+    });
+    if (dup) continue;
+    kept.push(x);
+    const row = rows.get(x.date)!;
+    const key = `${x.kind}_min` as "skate_min";
+    row[key] = Math.round(row[key] + x.mins);
   }
   for (const p of raw.azm.flatMap((r) => points(r, "rollupDataPoints"))) {
     const a = p.activeZoneMinutes;
@@ -227,7 +245,7 @@ export async function fetchDailyRows(
   let pending = false;
   for (const [s, e] of blocks(start, end)) {
     const settled = e < settledBefore;
-    const key = `v1:${opts.userId ?? "anon"}:daily:${s}:${e}`;
+    const key = `v1:${opts.userId ?? "anon"}:daily2:${s}:${e}`;
     if (settled && opts.cache) {
       try {
         const hit = await opts.cache.get(key, "json");
