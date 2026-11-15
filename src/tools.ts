@@ -11,6 +11,7 @@ import { isoDaysAgo, todayIso } from "./dates";
 import { toLeanJson } from "./shape";
 import { fetchDailyRows } from "./daily";
 import { saveCheckin, listCheckins, deleteCheckin } from "./checkins";
+import { saveLift, listLifts, deleteLift } from "./lifts";
 
 /**
  * Data type IDs in the Google Health API v4. The daily-aggregated metrics
@@ -325,6 +326,78 @@ export function registerTools(
       try {
         const { kv, user } = needStore();
         await deleteCheckin(kv, user, date);
+        return jsonResult({ deleted: date });
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "log_lift",
+    {
+      title: "Log a strength session",
+      description: "Save a strength session for a date: each exercise with its weight (lb), sets, reps and an optional note (e.g. 'last set dropped to 20', 'skipped'). Saving the same date again replaces that session, so include every exercise done that day. Only call this when the user tells you what they lifted.",
+      inputSchema: {
+        date: DATE.describe("Session date, YYYY-MM-DD (user's local date)."),
+        exercises: z.array(z.object({
+          name: z.string().min(1).max(60).describe("Exercise name, e.g. 'Dumbbell RDL'. Keep names consistent across sessions."),
+          weight_lb: z.number().min(0).max(1000).nullable().optional().describe("Weight per dumbbell in lb; null for bodyweight or band."),
+          sets: z.number().int().min(0).max(20).nullable().optional(),
+          reps: z.number().int().min(0).max(200).nullable().optional().describe("Reps per set, or seconds for holds such as planks."),
+          note: z.string().max(200).nullable().optional(),
+        })).min(1).max(30),
+        note: z.string().max(300).nullable().optional().describe("Optional note for the whole session."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ date, exercises, note }) => {
+      try {
+        const { kv, user } = needStore();
+        const session = {
+          date, note: note ?? null, at: new Date().toISOString(),
+          exercises: exercises.map((e) => ({ name: e.name.trim(), weight_lb: e.weight_lb ?? null, sets: e.sets ?? null, reps: e.reps ?? null, note: e.note ?? null })),
+        };
+        await saveLift(kv, user, session);
+        return jsonResult({ saved: session });
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "get_lifts",
+    {
+      title: "Strength log",
+      description: "Read logged strength sessions over a date range, one row per exercise per session (date, exercise, weight_lb, sets, reps, note). Use the latest row per exercise for current working weights.",
+      inputSchema: { start_date: DATE.describe("Inclusive start."), end_date: DATE.describe("Inclusive end.") },
+      annotations: READ_ONLY,
+    },
+    async ({ start_date, end_date }) => {
+      try {
+        const { kv, user } = needStore();
+        const sessions = await listLifts(kv, user, start_date, end_date);
+        const rows = sessions.flatMap((s) => s.exercises.map((e) => ({ date: s.date, exercise: e.name, weight_lb: e.weight_lb, sets: e.sets, reps: e.reps, note: e.note, session_note: s.note })));
+        return { content: [{ type: "text" as const, text: JSON.stringify({ rows }) }] };
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "delete_lift",
+    {
+      title: "Delete a strength session",
+      description: "Delete the logged strength session for one date. Only when the user asks.",
+      inputSchema: { date: DATE.describe("Date of the session to delete.") },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ date }) => {
+      try {
+        const { kv, user } = needStore();
+        await deleteLift(kv, user, date);
         return jsonResult({ deleted: date });
       } catch (err) {
         return errorResult(err);
