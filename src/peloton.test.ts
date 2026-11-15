@@ -46,6 +46,11 @@ describe("peloton parsing", () => {
     const late = Date.UTC(2026, 10, 15, 2, 30) / 1000; // 21:30 local on the 14th
     expect(parseWorkout(workout("a2", late), "America/New_York")!.date).toBe("2026-11-14");
   });
+  it("flags outdoor rides from the Peloton app", () => {
+    const w = parseWorkout(workout("o1", START, { ride: { title: "20 min 17 sec Outdoor Cycling", instructor: { name: "20 MIN 17 SEC OUTDOOR CYCLING" } }, total_work: 0 }), "UTC")!;
+    expect(w.outdoor).toBe(true);
+    expect(parseWorkout(workout("a1", START), "UTC")!.outdoor).toBe(false);
+  });
   it("maps power zones by % FTP", () => {
     expect([50, 60, 80, 100, 110, 140, 160].map((w) => powerZone(w, 100))).toEqual([1, 2, 3, 4, 5, 6, 7]);
     expect(powerZoneMinutes([50, 50, 100, 160, null], 100, 30)).toEqual({ z1: 1, z2: 0, z3: 0, z4: 0.5, z5: 0, z6: 0, z7: 0.5 });
