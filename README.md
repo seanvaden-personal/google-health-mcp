@@ -29,6 +29,7 @@ and recovery.
 | `get_nutrition` | Calories, macros, and hydration over a range (needs the nutrition scope) |
 | `get_cardiac_events` | ECG recordings + irregular-rhythm (AFib) notifications (needs ecg/irn scopes) |
 | `query_data_type` | Escape hatch: query **any** v4 data type by ID (incl. future ones) |
+| `get_peloton_rides` | Peloton bike rides: output (kJ), avg/max power, cadence, resistance, HR, power-zone minutes (optional; see below) |
 | `run_diagnostics` | Probes every metric and reports per-metric `ok` / `empty` / `error` |
 
 > **Troubleshooting:** if anything stops returning data, run `run_diagnostics`
@@ -106,6 +107,22 @@ Rules of thumb:
   `calories-in-heart-rate-zone` are limited to **14 days** per query; all other
   data types to **90 days**. Tools fetch the capped types best-effort so a long
   range degrades gracefully instead of failing the whole call.
+
+### Peloton (optional)
+
+`get_peloton_rides` and the `peloton_kj` / `peloton_min` / `peloton_avg_w`
+columns in `get_daily_metrics` read ride data from Peloton's **unofficial** web
+API (`POST /auth/login`, then the workouts list and each workout's
+`performance_graph`). Enable it by adding two Worker secrets:
+`PELOTON_USERNAME` and `PELOTON_PASSWORD`. They are used server-side only; the
+Peloton session id is kept in `HEALTH_CACHE` for 7 days and completed rides are
+cached for a year (both cleared by `delete_my_data`). Without the secrets the
+Peloton tool returns a "not configured" error and the daily columns are null.
+
+Caveats: the API is undocumented and can break if Peloton changes its auth;
+heart rate comes from whatever HR source is paired to the bike (a watch
+broadcasting HR works); it is null if nothing was paired; power zones need an FTP (set or Peloton-estimated).
+`run_diagnostics` includes a `peloton_workouts` probe when configured.
 
 ### Caching
 

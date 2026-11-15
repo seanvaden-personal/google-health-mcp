@@ -13,6 +13,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { GoogleHandler } from "./google-handler";
 import { GoogleHealthClient } from "./google-health";
 import { registerTools } from "./tools";
+import { PelotonClient } from "./peloton";
 import { ICON_PNG_SIZES } from "./icon";
 import type { Env, Props } from "./types";
 
@@ -48,6 +49,16 @@ export class GoogleHealthMCP extends McpAgent<Env, Record<string, never>, Props>
       this.env.TIME_ZONE || "Europe/London",
       () => this.purgeCache(),
       { cache: this.env.HEALTH_CACHE, userId: () => this.props.email },
+      () =>
+        this.env.PELOTON_USERNAME && this.env.PELOTON_PASSWORD
+          ? new PelotonClient({
+              username: this.env.PELOTON_USERNAME,
+              password: this.env.PELOTON_PASSWORD,
+              cache: this.env.HEALTH_CACHE,
+              userId: this.props.email,
+              timeZone: this.env.TIME_ZONE || "Europe/London",
+            })
+          : null,
     );
   }
 

@@ -30,4 +30,7 @@ export interface Env {
   ALLOWED_EMAILS: string;
   /** Comma-separated exact redirect URIs allowed for MCP clients (required). */
   ALLOWED_REDIRECT_URIS: string;
+  /** Peloton account login (Worker secrets). Peloton tools are off when unset. */
+  PELOTON_USERNAME?: string;
+  PELOTON_PASSWORD?: string;
 }
