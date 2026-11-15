@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { blocks, buildRows, localDate } from "./daily";
+import { blocks, buildRows, isOatmeal, localDate } from "./daily";
 
 describe("daily", () => {
   it("splits into aligned two-month blocks", () => {
@@ -35,5 +35,40 @@ describe("daily", () => {
     expect(by["2026-11-12"].steps).toBe(7993);
     expect(by["2026-11-13"].kcal_in).toBe(1563);
     expect(by["2026-11-13"].protein_g).toBe(127.8);
+  });
+});
+
+describe("food items", () => {
+  const item = (name: string, day: number, nutrients: [string, number][], id: string) => ({
+    dataPointName: id,
+    nutritionLog: {
+      interval: { civilStartTime: { date: { year: 2026, month: 11, day } } },
+      foodDisplayName: name,
+      nutrients: nutrients.map(([nutrient, grams]) => ({ nutrient, quantity: { grams } })),
+    },
+  });
+  it("sums sugar and saturated fat, flags oatmeal, dedupes", () => {
+    const oats = item("Bobs red mill Organic gluten free oatmeal", 9, [["SUGAR", 1]], "a");
+    const rows = buildRows("2026-11-09", "2026-11-11", {
+      hrv: [], rhr: [], sleep: [], exercise: [], azm: [], steps: [], weight: [], bodyFat: [],
+      nutrition: [{ rollupDataPoints: [{ civilStartTime: { date: { year: 2026, month: 11, day: 9 } }, nutritionLog: { nutrients: [{ nutrient: "SUGAR", quantity: { gramsSum: 99 } }] } }] }],
+      foods: [{ dataPoints: [
+        oats, oats,
+        item("Snickers, Fun Size", 9, [["SUGAR", 8.5], ["SATURATED_FAT", 1.5]], "b"),
+        item("Breakfast Biscuits (Gluten-Free, Blueberry)", 10, [["SUGAR", 11], ["SATURATED_FAT", 3]], "c"),
+      ] }],
+    });
+    const by = Object.fromEntries(rows.map((r) => [r.date, r]));
+    expect(by["2026-11-09"].sugar_g).toBe(9.5);
+    expect(by["2026-11-09"].sat_fat_g).toBe(1.5);
+    expect(by["2026-11-09"].oatmeal).toBe(true);
+    expect(by["2026-11-10"].oatmeal).toBe(false);
+    expect(by["2026-11-11"].oatmeal).toBe(null);
+  });
+  it("tells oatmeal from oat milk and Oreos", () => {
+    expect(isOatmeal("Overnight Oats")).toBe(true);
+    expect(isOatmeal("Oat Milk, Unsweetened")).toBe(false);
+    expect(isOatmeal("Cookie, Oreo, Golden, Gluten Free")).toBe(false);
+    expect(isOatmeal("Coat of chocolate")).toBe(false);
   });
 });
