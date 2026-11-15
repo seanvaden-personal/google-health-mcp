@@ -54,6 +54,6 @@
   //   COOKIE_ENCRYPTION_KEY   (any long random string)
   //   ALLOWED_EMAILS          (your Google account email; kept as a secret so
   //                            it isn't committed to your fork)
-  //   PELOTON_USERNAME        (optional; enables get_peloton_rides)
-  //   PELOTON_PASSWORD        (optional)
+  //   PELOTON_BEARER_TOKEN    (optional; enables get_peloton_rides. Copy the
+  //                            Authorization header from the Peloton web app.)
 }

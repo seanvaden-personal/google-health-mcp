@@ -12,7 +12,7 @@ import { toLeanJson } from "./shape";
 import { fetchDailyRows } from "./daily";
 import { saveCheckin, listCheckins, deleteCheckin } from "./checkins";
 import { saveLift, listLifts, deleteLift } from "./lifts";
-import { PelotonClient, dailyTotals, type PelotonDay } from "./peloton";
+import { PelotonClient, dailyTotals, TOKEN_HELP, type PelotonDay } from "./peloton";
 
 /**
  * Data type IDs in the Google Health API v4. The daily-aggregated metrics
@@ -127,7 +127,7 @@ export function registerTools(
   store?: { cache?: KVNamespace; userId?: () => string },
   getPeloton: () => PelotonClient | null = () => null,
 ) {
-  const NO_PELOTON = "Peloton is not configured: set the PELOTON_USERNAME and PELOTON_PASSWORD secrets on the Worker.";
+  const NO_PELOTON = `Peloton is not configured: no PELOTON_BEARER_TOKEN secret on the Worker. ${TOKEN_HELP}`;
 
   // The headline tool: one call to decide "should I train today?"
   server.registerTool(

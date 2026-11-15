@@ -1,17 +1,17 @@
 /**
  * Peloton ride data via Peloton's unofficial web API (the same one the web app
- * uses). Credentials are Worker secrets (PELOTON_USERNAME / PELOTON_PASSWORD)
- * and never leave the server; the session id is kept in HEALTH_CACHE so we do
- * not log in on every call.
+ * uses), authenticated with a bearer token copied once from the logged-in web
+ * app and stored as the PELOTON_BEARER_TOKEN Worker secret. (Peloton retired
+ * the username/password /auth/login endpoint in 2026.) The token never leaves
+ * the server; the Peloton user id is cached in HEALTH_CACHE.
  *
  * Unofficial: Peloton can change auth or response shapes without notice, so
  * every field is read defensively and missing data comes back as null.
  *
  * Calls:
- *   POST /auth/login                          → { session_id, user_id }
  *   GET  /api/user/{id}/workouts?joins=…       → paged workout list
  *   GET  /api/workout/{id}/performance_graph   → summaries, averages, per-sample metrics
- *   GET  /api/me                               → FTP (only when a ride lacks ftp_info)
+ *   GET  /api/me                               → user id, FTP
  */
 import { isoInTz } from "./dates";
 
@@ -222,8 +222,8 @@ export function dailyTotals(workouts: PelotonWorkout[]): Map<string, PelotonDay>
 }
 
 export type PelotonOpts = {
-  username: string;
-  password: string;
+  /** Bearer token copied from the logged-in Peloton web app (Authorization header). */
+  token: string;
   cache?: KVNamespace;
   /** Scopes cache keys; same `v1:<user>:` prefix as the health cache so delete_my_data clears it. */
   userId: string;
@@ -232,8 +232,12 @@ export type PelotonOpts = {
   now?: () => number;
 };
 
+export const TOKEN_HELP =
+  "Get a fresh one: log in at members.onepeloton.com, open DevTools → Network, click any api.onepeloton.com request, copy the Authorization header value after 'Bearer ', and save it as the PELOTON_BEARER_TOKEN Worker secret.";
+
 export class PelotonClient {
-  private session: { id: string; userId: string } | null = null;
+  private pelotonUserId: string | null = null;
+  private me: Obj | null = null;
   private meFtp: { ftp: number | null; source: string | null } | undefined;
   private readonly f: typeof fetch;
   private readonly now: () => number;
@@ -245,48 +249,39 @@ export class PelotonClient {
 
   private key(k: string) { return `v1:${this.o.userId}:peloton1:${k}`; }
 
-  private async login(): Promise<{ id: string; userId: string }> {
-    const res = await this.f(`${API}/auth/login`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Peloton-Platform": "web", "User-Agent": "google-health-mcp" },
-      body: JSON.stringify({ username_or_email: this.o.username, password: this.o.password }),
+  private async raw(path: string): Promise<Obj> {
+    const token = this.o.token.replace(/^Bearer\s+/i, "").trim();
+    const res = await this.f(`${API}${path}`, {
+      headers: { Authorization: `Bearer ${token}`, "Peloton-Platform": "web", "User-Agent": "google-health-mcp" },
     });
-    if (!res.ok) {
-      const body = (await res.text().catch(() => "")).slice(0, 300);
-      throw new Error(`Peloton login failed: HTTP ${res.status}${body ? ` — ${body}` : ""}`);
-    }
-    const j = (await res.json()) as Obj;
-    if (!j?.session_id || !j?.user_id) throw new Error("Peloton login returned no session_id/user_id (auth flow may have changed).");
-    const s = { id: String(j.session_id), userId: String(j.user_id) };
-    try { await this.o.cache?.put(this.key("session"), JSON.stringify(s), { expirationTtl: SESSION_TTL_SECONDS }); } catch { /* best effort */ }
-    return s;
+    if (res.status === 401 || res.status === 403) throw new Error(`Peloton rejected the bearer token (HTTP ${res.status}); it has probably expired. ${TOKEN_HELP}`);
+    if (!res.ok) throw new Error(`Peloton GET ${path.split("?")[0]} failed: HTTP ${res.status}`);
+    return (await res.json()) as Obj;
   }
 
-  private async getSession(): Promise<{ id: string; userId: string }> {
-    if (this.session) return this.session;
+  private async getMe(): Promise<Obj> {
+    if (!this.me) this.me = await this.raw("/api/me");
+    return this.me;
+  }
+
+  /** Peloton user id: from KV when known, else /api/me (cached for a week). */
+  private async getUserId(): Promise<string> {
+    if (this.pelotonUserId) return this.pelotonUserId;
     try {
-      const hit = await this.o.cache?.get<{ id: string; userId: string }>(this.key("session"), "json");
-      if (hit?.id && hit.userId) return (this.session = hit);
+      const hit = await this.o.cache?.get(this.key("user"));
+      if (hit) return (this.pelotonUserId = hit);
     } catch { /* miss */ }
-    return (this.session = await this.login());
+    const id = (await this.getMe())?.id;
+    if (!id) throw new Error("Peloton /api/me returned no user id.");
+    this.pelotonUserId = String(id);
+    try { await this.o.cache?.put(this.key("user"), this.pelotonUserId, { expirationTtl: SESSION_TTL_SECONDS }); } catch { /* best effort */ }
+    return this.pelotonUserId;
   }
 
-  /** GET with the session cookie; re-logs in once if the session has expired. */
+  /** GET with the bearer token; `{user}` in the path is replaced by the Peloton user id. */
   async get(path: string): Promise<Obj> {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const s = await this.getSession();
-      const res = await this.f(`${API}${path.replace("{user}", encodeURIComponent(s.userId))}`, {
-        headers: { Cookie: `peloton_session_id=${s.id}`, "Peloton-Platform": "web", "User-Agent": "google-health-mcp" },
-      });
-      if ((res.status === 401 || res.status === 403) && attempt === 0) {
-        this.session = null;
-        try { await this.o.cache?.delete(this.key("session")); } catch { /* ignore */ }
-        continue;
-      }
-      if (!res.ok) throw new Error(`Peloton GET ${path.split("?")[0]} failed: HTTP ${res.status}`);
-      return (await res.json()) as Obj;
-    }
-    throw new Error("Peloton authentication failed after re-login.");
+    if (path.includes("{user}")) path = path.replace("{user}", encodeURIComponent(await this.getUserId()));
+    return this.raw(path);
   }
 
   /** Workouts whose local start date is in [start, end], newest first, paging back until older than start. */
@@ -312,7 +307,7 @@ export class PelotonClient {
   private async ftpFromMe(): Promise<{ ftp: number | null; source: string | null }> {
     if (this.meFtp) return this.meFtp;
     try {
-      const me = await this.get("/api/me");
+      const me = await this.getMe();
       const set = num(me?.cycling_workout_ftp) || num(me?.cycling_ftp);
       const est = num(me?.estimated_cycling_ftp);
       this.meFtp = set ? { ftp: set, source: String(me?.cycling_ftp_source ?? "set") } : est ? { ftp: est, source: "estimated" } : { ftp: null, source: null };

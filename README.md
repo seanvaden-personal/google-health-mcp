@@ -112,12 +112,15 @@ Rules of thumb:
 
 `get_peloton_rides` and the `peloton_kj` / `peloton_min` / `peloton_avg_w`
 columns in `get_daily_metrics` read ride data from Peloton's **unofficial** web
-API (`POST /auth/login`, then the workouts list and each workout's
-`performance_graph`). Enable it by adding two Worker secrets:
-`PELOTON_USERNAME` and `PELOTON_PASSWORD`. They are used server-side only; the
-Peloton session id is kept in `HEALTH_CACHE` for 7 days and completed rides are
-cached for a year (both cleared by `delete_my_data`). Without the secrets the
-Peloton tool returns a "not configured" error and the daily columns are null.
+API (the workouts list and each workout's `performance_graph`). Peloton
+retired its username/password login in 2026, so it authenticates with a bearer
+token copied from the web app: log in at members.onepeloton.com, open DevTools →
+Network, click any `api.onepeloton.com` request, and copy the `Authorization`
+header value after `Bearer `. Save it as the Worker secret
+`PELOTON_BEARER_TOKEN` (reportedly valid for about a year; when it expires the
+tools say so). Completed rides are cached for a year and the Peloton user id
+for a week, both cleared by `delete_my_data`. Without the secret the Peloton
+tool returns a "not configured" error and the daily columns are null.
 
 Caveats: the API is undocumented and can break if Peloton changes its auth;
 heart rate comes from whatever HR source is paired to the bike (a watch
