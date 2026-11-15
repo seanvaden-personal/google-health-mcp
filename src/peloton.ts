@@ -75,7 +75,7 @@ export type PelotonRide = {
   distance_unit: string | null;
   /** Peloton's own estimate. Not logged anywhere; the watch's calories are the ones that reach LoseIt. */
   peloton_kcal: number | null;
-  /** Null when no HR monitor was paired to the bike; use the watch exercise session instead. */
+  /** From the HR source paired to the bike (Sean pairs his watch); null if none was paired. */
   avg_hr: number | null;
   max_hr: number | null;
   hr_zone_min: Record<string, number> | null;

@@ -427,7 +427,7 @@ export function registerTools(
     "get_peloton_rides",
     {
       title: "Peloton rides",
-      description: "Peloton bike rides over a date range, one row per completed ride: date, local start time, class title and instructor, duration, total output (kJ), avg/max power (W), avg/max cadence (rpm), avg/max resistance (%), avg speed, distance, avg/max HR and HR-zone minutes (null unless an HR monitor was paired to the bike; otherwise use the watch session from get_exercise_sessions), FTP and minutes in Peloton power zones 1-7 (null when no FTP is known; ftp_source says whether it is set or estimated). peloton_kcal is Peloton's own estimate; the watch's calories are the ones logged. If pending is true, call again with the same arguments for the remaining rides.",
+      description: "Peloton bike rides over a date range, one row per completed ride: date, local start time, class title and instructor, duration, total output (kJ), avg/max power (W), avg/max cadence (rpm), avg/max resistance (%), avg speed, distance, avg/max HR and HR-zone minutes (from the HR source paired to the bike, e.g. the watch; null if none was paired, in which case use the watch session from get_exercise_sessions), FTP and minutes in Peloton power zones 1-7 (null when no FTP is known; ftp_source says whether it is set or estimated). peloton_kcal is Peloton's own estimate; the watch's calories are the ones logged. If pending is true, call again with the same arguments for the remaining rides.",
       inputSchema: {
         start_date: DATE.describe("Inclusive start, YYYY-MM-DD."),
         end_date: DATE.describe("Inclusive end, YYYY-MM-DD."),

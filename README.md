@@ -120,8 +120,8 @@ cached for a year (both cleared by `delete_my_data`). Without the secrets the
 Peloton tool returns a "not configured" error and the daily columns are null.
 
 Caveats: the API is undocumented and can break if Peloton changes its auth;
-heart rate is only present if an HR monitor was paired to the bike (otherwise
-use the watch session); power zones need an FTP (set or Peloton-estimated).
+heart rate comes from whatever HR source is paired to the bike (a watch
+broadcasting HR works); it is null if nothing was paired; power zones need an FTP (set or Peloton-estimated).
 `run_diagnostics` includes a `peloton_workouts` probe when configured.
 
 ### Caching
