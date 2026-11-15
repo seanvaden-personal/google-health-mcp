@@ -46,6 +46,8 @@ export class GoogleHealthClient {
   private readonly cache?: KVNamespace;
   private readonly userId: string;
   private readonly timeZone: string;
+  /** In-flight token refresh, shared so concurrent 401s refresh only once. */
+  private refreshing?: Promise<void>;
 
   constructor(opts: GoogleHealthClientOptions) {
     this.accessToken = opts.accessToken;
@@ -263,17 +265,26 @@ export class GoogleHealthClient {
     init: RequestInit,
     state: { authRetried: boolean; attempt: number } = { authRetried: false, attempt: 0 },
   ): Promise<unknown> {
+    const sentToken = this.accessToken;
     const res = await fetch(url, {
       ...init,
       headers: {
-        Authorization: `Bearer ${this.accessToken}`,
+        Authorization: `Bearer ${sentToken}`,
         "Content-Type": "application/json",
         ...(init.headers ?? {}),
       },
     });
 
     if (res.status === 401 && this.refreshToken && !state.authRetried) {
-      await this.refresh();
+      // Many requests run in parallel; when the token expires they all 401 at
+      // once. Refresh once and let the rest wait on it (or simply retry if
+      // another request already swapped the token), so an expiry costs one
+      // refresh instead of one per request — which blew the Workers
+      // subrequest limit in run_diagnostics.
+      if (this.accessToken === sentToken) {
+        this.refreshing ??= this.refresh().finally(() => { this.refreshing = undefined; });
+        await this.refreshing;
+      }
       return this.request(url, init, { ...state, authRetried: true });
     }
 

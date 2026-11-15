@@ -60,6 +60,9 @@ const DATA_TYPE = {
 /** These tools only read upstream data and reach an external API. */
 const READ_ONLY = { readOnlyHint: true, openWorldHint: true } as const;
 
+/** Diagnostics probes run concurrently per batch. */
+const DIAG_BATCH = 6;
+
 /** Daily computed types (resting HR, HRV) filter on a flat `date` field
  *  rather than the `interval.civil_start_time` used by interval types. */
 const BY_DATE = { timeMember: "date" } as const;
@@ -267,7 +270,7 @@ export function registerTools(
         let byDay = new Map<string, PelotonDay>();
         if (peloton) {
           try {
-            const ws = (await peloton.listWorkouts(start_date, end_date)).filter((w) => w.discipline === "cycling" && w.status.toUpperCase() === "COMPLETE");
+            const ws = (await peloton.listWorkouts(start_date, end_date)).filter((w) => w.discipline === "cycling" && !w.outdoor && w.status.toUpperCase() === "COMPLETE");
             byDay = dailyTotals(ws);
           } catch (err) {
             peloton_error = err instanceof Error ? err.message : String(err);
@@ -427,7 +430,7 @@ export function registerTools(
     "get_peloton_rides",
     {
       title: "Peloton rides",
-      description: "Peloton bike rides over a date range, one row per completed ride: date, local start time, class title and instructor, duration, total output (kJ), avg/max power (W), avg/max cadence (rpm), avg/max resistance (%), avg speed, distance, avg/max HR and HR-zone minutes (from the HR source paired to the bike, e.g. the watch; null if none was paired, in which case use the watch session from get_exercise_sessions), FTP and minutes in Peloton power zones 1-7 (null when no FTP is known; ftp_source says whether it is set or estimated). peloton_kcal is Peloton's own estimate; the watch's calories are the ones logged. If pending is true, call again with the same arguments for the remaining rides.",
+      description: "Peloton bike rides over a date range, one row per completed ride (outdoor rides logged in the Peloton app are excluded unless discipline is all): date, local start time, class title and instructor, duration, total output (kJ), avg/max power (W), avg/max cadence (rpm), avg/max resistance (%), avg speed, distance, avg/max HR and HR-zone minutes (from the HR source paired to the bike, e.g. the watch; null if none was paired, in which case use the watch session from get_exercise_sessions), FTP and minutes in Peloton power zones 1-7 (null when no FTP is known; ftp_source says whether it is set or estimated). peloton_kcal is Peloton's own estimate; the watch's calories are the ones logged. If pending is true, call again with the same arguments for the remaining rides.",
       inputSchema: {
         start_date: DATE.describe("Inclusive start, YYYY-MM-DD."),
         end_date: DATE.describe("Inclusive end, YYYY-MM-DD."),
@@ -745,8 +748,10 @@ export function registerTools(
         probes.push({ metric: "peloton_workouts", run: async () => ({ dataPoints: await peloton.listWorkouts(isoDaysAgo(30, timeZone), end, { limit: 20 }) }) });
       }
 
-      const results = await Promise.all(
-        probes.map(async (p) => {
+      // Run the first probe alone (so an expired token is refreshed once),
+      // then the rest in small batches: 30+ parallel probes, each with paging
+      // and retries, can exceed the Workers per-invocation subrequest limit.
+      const runProbe = async (p: (typeof probes)[number]) => {
           try {
             const points = countItems(await p.run());
             return { metric: p.metric, status: points > 0 ? "ok" : "empty", points };
@@ -757,8 +762,11 @@ export function registerTools(
               error: err instanceof Error ? err.message : String(err),
             };
           }
-        }),
-      );
+      };
+      const results = [await runProbe(probes[0])];
+      for (let i = 1; i < probes.length; i += DIAG_BATCH) {
+        results.push(...(await Promise.all(probes.slice(i, i + DIAG_BATCH).map(runProbe))));
+      }
 
       return jsonResult({ window: { start, end }, timeZone, results });
     },

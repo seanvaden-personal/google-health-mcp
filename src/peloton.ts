@@ -48,6 +48,8 @@ export type PelotonWorkout = {
   total_output_kj: number | null;
   title: string | null;
   instructor: string | null;
+  /** GPS outdoor ride logged in the Peloton app: no bike metrics. */
+  outdoor: boolean;
   start_epoch: number;
   end_epoch: number | null;
   ftp_w: number | null;
@@ -128,6 +130,7 @@ export function parseWorkout(w: Obj, fallbackTz: string): PelotonWorkout | null 
     total_output_kj: work === null ? null : r1(work / 1000),
     title: ride.title ?? null,
     instructor: ride.instructor?.name ?? null,
+    outdoor: /\boutdoor\b/i.test(String(ride.title ?? "")) || /outdoor/i.test(String(w.workout_type ?? "")),
     start_epoch: startEpoch,
     end_epoch: end,
     ftp_w: num(w.ftp_info?.ftp) || null,
@@ -323,7 +326,7 @@ export class PelotonClient {
    */
   async rides(start: string, end: string, opts: { discipline?: "cycling" | "all" } = {}): Promise<{ rides: PelotonRide[]; pending: boolean }> {
     const workouts = (await this.listWorkouts(start, end)).filter(
-      (w) => w.status.toUpperCase() === "COMPLETE" && (opts.discipline === "all" || w.discipline === "cycling"),
+      (w) => w.status.toUpperCase() === "COMPLETE" && (opts.discipline === "all" || (w.discipline === "cycling" && !w.outdoor)),
     );
     const rides: PelotonRide[] = [];
     let fetched = 0;
