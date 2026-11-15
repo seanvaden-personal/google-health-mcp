@@ -47,6 +47,7 @@ export class GoogleHealthMCP extends McpAgent<Env, Record<string, never>, Props>
         }),
       this.env.TIME_ZONE || "Europe/London",
       () => this.purgeCache(),
+      { cache: this.env.HEALTH_CACHE, userId: () => this.props.email },
     );
   }
 

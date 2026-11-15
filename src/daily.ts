@@ -177,12 +177,12 @@ export function buildRows(start: string, end: string, raw: {
   return [...rows.values()];
 }
 
-/** Fetch every block in parallel and merge. */
-export async function fetchDailyRows(client: GoogleHealthClient, start: string, end: string): Promise<DailyRow[]> {
+/** Raw fetch of one block (about 9–20 upstream requests with paging). */
+async function fetchBlock(client: GoogleHealthClient, s: string, e: string) {
   const BY_DATE = { timeMember: "date" } as const;
   const SLEEP = { timeMember: "interval.end_time", physical: true } as const;
-  const parts = await Promise.all(
-    blocks(start, end).map(async ([s, e]) => {
+  {
+    {
       const [hrv, rhr, sleep, exercise, azm, steps, nutrition, weight, bodyFat] = await Promise.all([
         client.reconcile("daily-heart-rate-variability", s, e, BY_DATE),
         client.reconcile("daily-resting-heart-rate", s, e, BY_DATE),
@@ -196,13 +196,60 @@ export async function fetchDailyRows(client: GoogleHealthClient, start: string, 
         client.dailyRollUp("weight", s, e),
         client.dailyRollUp("body-fat", s, e),
       ]);
-      return { hrv, rhr, sleep, exercise, azm, steps, nutrition, weight, bodyFat };
-    }),
-  );
-  const merged = {
-    hrv: parts.map((p) => p.hrv), rhr: parts.map((p) => p.rhr), sleep: parts.map((p) => p.sleep),
-    exercise: parts.map((p) => p.exercise), azm: parts.map((p) => p.azm), steps: parts.map((p) => p.steps),
-    nutrition: parts.map((p) => p.nutrition), weight: parts.map((p) => p.weight), bodyFat: parts.map((p) => p.bodyFat),
-  };
-  return buildRows(start, end, merged);
+      return buildRows(s, e, {
+        hrv: [hrv], rhr: [rhr], sleep: [sleep], exercise: [exercise], azm: [azm], steps: [steps],
+        nutrition: [nutrition], weight: [weight], bodyFat: [bodyFat],
+      });
+    }
+  }
+}
+
+/** A block's rows are final (and stored for a year) once it ended at least
+ *  this many days ago, which leaves room for late syncs such as a weigh-in. */
+const SETTLE_DAYS = 7;
+const BLOCK_TTL_SECONDS = 365 * 24 * 60 * 60;
+
+/**
+ * Rows for [start, end]. Settled blocks come from KV when stored. To stay under
+ * the Workers per-invocation subrequest limit, at most one unstored settled
+ * block is fetched per call (plus any unsettled, recent block); `pending` is
+ * true when more remain, and the caller simply calls again.
+ */
+export async function fetchDailyRows(
+  client: GoogleHealthClient,
+  start: string,
+  end: string,
+  opts: { cache?: KVNamespace; userId?: string; today: string },
+): Promise<{ rows: DailyRow[]; pending: boolean }> {
+  const settledBefore = isoMinusDays(opts.today, SETTLE_DAYS);
+  const rows: DailyRow[] = [];
+  let fetchedSettled = 0;
+  let pending = false;
+  for (const [s, e] of blocks(start, end)) {
+    const settled = e < settledBefore;
+    const key = `v1:${opts.userId ?? "anon"}:daily:${s}:${e}`;
+    if (settled && opts.cache) {
+      try {
+        const hit = await opts.cache.get(key, "json");
+        if (hit) { rows.push(...(hit as DailyRow[])); continue; }
+      } catch { /* treat as miss */ }
+    }
+    if (settled && fetchedSettled >= 1) { pending = true; continue; }
+    const blockRows = await fetchBlock(client, s, e);
+    rows.push(...blockRows);
+    if (settled) {
+      fetchedSettled++;
+      if (opts.cache) {
+        try { await opts.cache.put(key, JSON.stringify(blockRows), { expirationTtl: BLOCK_TTL_SECONDS }); } catch { /* best effort */ }
+      }
+    }
+  }
+  rows.sort((a, b) => (a.date < b.date ? -1 : 1));
+  return { rows, pending };
+}
+
+function isoMinusDays(iso: string, days: number): string {
+  const d = new Date(iso + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() - days);
+  return d.toISOString().slice(0, 10);
 }

@@ -121,6 +121,7 @@ export function registerTools(
   getClient: () => GoogleHealthClient,
   timeZone: string,
   purgeCache: () => Promise<number>,
+  store?: { cache?: KVNamespace; userId?: () => string },
 ) {
   // The headline tool: one call to decide "should I train today?"
   server.registerTool(
@@ -236,7 +237,7 @@ export function registerTools(
     "get_daily_metrics",
     {
       title: "Daily Metrics (compact)",
-      description: "One compact row per day over a long date range (up to ~400 days): HRV, resting HR, sleep hours/deep/REM/naps, steps, heart-zone minutes, exercise minutes by kind (skate, lift, walk, ride, other), food calories and macros, weight (lb) and body fat %. Built for dashboards and long-term trend analysis; use the specific tools for detail on a few days.",
+      description: "One compact row per day over a long date range (up to ~400 days). If the response has pending: true, older months are still being prepared: call again with the same arguments to get the rest: HRV, resting HR, sleep hours/deep/REM/naps, steps, heart-zone minutes, exercise minutes by kind (skate, lift, walk, ride, other), food calories and macros, weight (lb) and body fat %. Built for dashboards and long-term trend analysis; use the specific tools for detail on a few days.",
       inputSchema: {
         start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe("Inclusive start, YYYY-MM-DD."),
         end_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe("Inclusive end, YYYY-MM-DD."),
@@ -248,8 +249,12 @@ export function registerTools(
         if (end_date < start_date) throw new Error("end_date is before start_date");
         const days = (Date.parse(end_date) - Date.parse(start_date)) / 86400000;
         if (days > 400) throw new Error("Range too long: at most 400 days.");
-        const rows = await fetchDailyRows(getClient(), start_date, end_date);
-        return { content: [{ type: "text" as const, text: JSON.stringify({ rows }) }] };
+        const out = await fetchDailyRows(getClient(), start_date, end_date, {
+          cache: store?.cache,
+          userId: store?.userId?.(),
+          today: todayIso(timeZone),
+        });
+        return { content: [{ type: "text" as const, text: JSON.stringify(out) }] };
       } catch (err) {
         return errorResult(err);
       }
