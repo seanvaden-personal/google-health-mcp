@@ -9,6 +9,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { GoogleHealthClient } from "./google-health";
 import { isoDaysAgo, todayIso } from "./dates";
 import { toLeanJson } from "./shape";
+import { fetchDailyRows } from "./daily";
 
 /**
  * Data type IDs in the Google Health API v4. The daily-aggregated metrics
@@ -225,6 +226,30 @@ export function registerTools(
           client.reconcile(DATA_TYPE.restingHeartRate, start_date, end_date, BY_DATE),
         ]);
         return jsonResult({ activeZoneMinutes: azm, steps, distance, totalCalories, restingHeartRate: restingHr });
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "get_daily_metrics",
+    {
+      title: "Daily Metrics (compact)",
+      description: "One compact row per day over a long date range (up to ~400 days): HRV, resting HR, sleep hours/deep/REM/naps, steps, heart-zone minutes, exercise minutes by kind (skate, lift, walk, ride, other), food calories and macros, weight (lb) and body fat %. Built for dashboards and long-term trend analysis; use the specific tools for detail on a few days.",
+      inputSchema: {
+        start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe("Inclusive start, YYYY-MM-DD."),
+        end_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe("Inclusive end, YYYY-MM-DD."),
+      },
+      annotations: READ_ONLY,
+    },
+    async ({ start_date, end_date }) => {
+      try {
+        if (end_date < start_date) throw new Error("end_date is before start_date");
+        const days = (Date.parse(end_date) - Date.parse(start_date)) / 86400000;
+        if (days > 400) throw new Error("Range too long: at most 400 days.");
+        const rows = await fetchDailyRows(getClient(), start_date, end_date);
+        return { content: [{ type: "text" as const, text: JSON.stringify({ rows }) }] };
       } catch (err) {
         return errorResult(err);
       }
