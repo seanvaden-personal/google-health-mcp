@@ -12,6 +12,7 @@ import { toLeanJson } from "./shape";
 import { fetchDailyRows } from "./daily";
 import { saveCheckin, listCheckins, deleteCheckin } from "./checkins";
 import { saveLift, listLifts, deleteLift } from "./lifts";
+import { PelotonClient, dailyTotals, type PelotonDay } from "./peloton";
 
 /**
  * Data type IDs in the Google Health API v4. The daily-aggregated metrics
@@ -124,7 +125,10 @@ export function registerTools(
   timeZone: string,
   purgeCache: () => Promise<number>,
   store?: { cache?: KVNamespace; userId?: () => string },
+  getPeloton: () => PelotonClient | null = () => null,
 ) {
+  const NO_PELOTON = "Peloton is not configured: set the PELOTON_USERNAME and PELOTON_PASSWORD secrets on the Worker.";
+
   // The headline tool: one call to decide "should I train today?"
   server.registerTool(
     "get_recovery_snapshot",
@@ -239,7 +243,7 @@ export function registerTools(
     "get_daily_metrics",
     {
       title: "Daily Metrics (compact)",
-      description: "One compact row per day over a long date range (up to ~400 days), including bedtime (bed_h: hours from midnight, negative = before midnight) and wake time (wake_h). If the response has pending: true, older months are still being prepared: call again with the same arguments to get the rest: HRV, resting HR, sleep hours/deep/REM/naps, steps, heart-zone minutes, exercise minutes by kind (skate, lift, walk, ride, other), food calories and macros (incl. sugar and saturated fat), oatmeal (true if oats were logged that day), weight (lb) and body fat %. Built for dashboards and long-term trend analysis; use the specific tools for detail on a few days.",
+      description: "One compact row per day over a long date range (up to ~400 days), including bedtime (bed_h: hours from midnight, negative = before midnight) and wake time (wake_h). If the response has pending: true, older months are still being prepared: call again with the same arguments to get the rest: HRV, resting HR, sleep hours/deep/REM/naps, steps, heart-zone minutes, exercise minutes by kind (skate, lift, walk, ride, other), food calories and macros (incl. sugar and saturated fat), oatmeal (true if oats were logged that day), weight (lb) and body fat %, and Peloton bike totals (peloton_kj, peloton_min, peloton_avg_w; null on days without a Peloton ride or when Peloton is not configured; peloton_error is set if Peloton could not be read). Built for dashboards and long-term trend analysis; use the specific tools for detail on a few days.",
       inputSchema: {
         start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe("Inclusive start, YYYY-MM-DD."),
         end_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe("Inclusive end, YYYY-MM-DD."),
@@ -256,7 +260,21 @@ export function registerTools(
           userId: store?.userId?.(),
           today: todayIso(timeZone),
         });
-        return { content: [{ type: "text" as const, text: JSON.stringify(out) }] };
+        // Peloton totals are merged at read time (not stored in the cached
+        // blocks) and best-effort: a Peloton failure never breaks this tool.
+        let peloton_error: string | undefined;
+        const peloton = getPeloton();
+        let byDay = new Map<string, PelotonDay>();
+        if (peloton) {
+          try {
+            const ws = (await peloton.listWorkouts(start_date, end_date)).filter((w) => w.discipline === "cycling" && w.status.toUpperCase() === "COMPLETE");
+            byDay = dailyTotals(ws);
+          } catch (err) {
+            peloton_error = err instanceof Error ? err.message : String(err);
+          }
+        }
+        const rows = out.rows.map((r) => ({ ...r, peloton_kj: null, peloton_min: null, peloton_avg_w: null, ...byDay.get(r.date) }));
+        return { content: [{ type: "text" as const, text: JSON.stringify({ ...out, rows, ...(peloton_error ? { peloton_error } : {}) }) }] };
       } catch (err) {
         return errorResult(err);
       }
@@ -399,6 +417,31 @@ export function registerTools(
         const { kv, user } = needStore();
         await deleteLift(kv, user, date);
         return jsonResult({ deleted: date });
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "get_peloton_rides",
+    {
+      title: "Peloton rides",
+      description: "Peloton bike rides over a date range, one row per completed ride: date, local start time, class title and instructor, duration, total output (kJ), avg/max power (W), avg/max cadence (rpm), avg/max resistance (%), avg speed, distance, avg/max HR and HR-zone minutes (null unless an HR monitor was paired to the bike; otherwise use the watch session from get_exercise_sessions), FTP and minutes in Peloton power zones 1-7 (null when no FTP is known; ftp_source says whether it is set or estimated). peloton_kcal is Peloton's own estimate; the watch's calories are the ones logged. If pending is true, call again with the same arguments for the remaining rides.",
+      inputSchema: {
+        start_date: DATE.describe("Inclusive start, YYYY-MM-DD."),
+        end_date: DATE.describe("Inclusive end, YYYY-MM-DD."),
+        discipline: z.enum(["cycling", "all"]).default("cycling").describe("cycling (default) or all Peloton workouts."),
+      },
+      annotations: READ_ONLY,
+    },
+    async ({ start_date, end_date, discipline }) => {
+      try {
+        if (end_date < start_date) throw new Error("end_date is before start_date");
+        const peloton = getPeloton();
+        if (!peloton) throw new Error(NO_PELOTON);
+        const out = await peloton.rides(start_date, end_date, { discipline });
+        return { content: [{ type: "text" as const, text: JSON.stringify(out) }] };
       } catch (err) {
         return errorResult(err);
       }
@@ -697,6 +740,10 @@ export function registerTools(
         { metric: "electrocardiogram", run: () => client.listByDate(DATA_TYPE.electrocardiogram, start, end, ECG_FILTER) },
         { metric: "irregular_rhythm_notification", run: () => client.listByDate(DATA_TYPE.irregularRhythm, start, end, BY_SAMPLE_TIME) },
       ];
+      const peloton = getPeloton();
+      if (peloton) {
+        probes.push({ metric: "peloton_workouts", run: async () => ({ dataPoints: await peloton.listWorkouts(isoDaysAgo(30, timeZone), end, { limit: 20 }) }) });
+      }
 
       const results = await Promise.all(
         probes.map(async (p) => {
