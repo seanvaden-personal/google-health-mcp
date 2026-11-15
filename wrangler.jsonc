@@ -4,6 +4,8 @@
   "main": "src/index.ts",
   "compatibility_date": "2025-06-01",
   "compatibility_flags": ["nodejs_compat"],
+  // Keep variables/secrets set in the Cloudflare dashboard across Git deploys.
+  "keep_vars": true,
   "observability": {
     "enabled": true
   },
