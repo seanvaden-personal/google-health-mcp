@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { PelotonClient, buildRide, dailyTotals, parseWorkout, powerZone, powerZoneMinutes } from "./peloton";
+import { PelotonClient, bestAverage, buildRide, dailyTotals, parseWorkout, powerZone, powerZoneMinutes, rideType } from "./peloton";
 
 /** Minimal in-memory KV with the bits the client uses. */
 function memKv() {
@@ -51,6 +51,14 @@ describe("peloton parsing", () => {
     expect(w.outdoor).toBe(true);
     expect(parseWorkout(workout("a1", START), "UTC")!.outdoor).toBe(false);
   });
+  it("classifies ride types from titles", () => {
+    expect(["20 min FTP Test Ride", "45 min Power Zone Max Ride", "30 min Power Zone Endurance Ride", "45 min Power Zone Ride", "5 min Cool Down Ride", "10 min Warm Up Ride", "20 min Low Impact Ride", "30 min 80s Ride", null].map(rideType))
+      .toEqual(["ftp_test", "pz_max", "pz_endurance", "power_zone", "cool_down", "warm_up", "low_impact", "other", "other"]);
+  });
+  it("finds best rolling average power", () => {
+    expect(bestAverage([100, 100, 200, 300, 100], 10, 5)).toBe(250);
+    expect(bestAverage([100, 100], 1200, 5)).toBeNull();
+  });
   it("maps power zones by % FTP", () => {
     expect([50, 60, 80, 100, 110, 140, 160].map((w) => powerZone(w, 100))).toEqual([1, 2, 3, 4, 5, 6, 7]);
     expect(powerZoneMinutes([50, 50, 100, 160, null], 100, 30)).toEqual({ z1: 1, z2: 0, z3: 0, z4: 0.5, z5: 0, z6: 0, z7: 0.5 });
@@ -63,6 +71,8 @@ describe("peloton parsing", () => {
     const g = { ...graph, metrics: [...graph.metrics, { slug: "heart_rate", average_value: 122, max_value: 141, zones: [{ slug: "zone1", duration: 600 }, { slug: "zone2", duration: 2100 }] }] };
     const r = buildRide(parseWorkout(workout("a1", START), "America/New_York")!, g, { ftp: 150, source: "ftp_workout_source" }, 5);
     expect(r.avg_hr).toBe(122);
+    expect(r.efficiency).toBe(0.98);
+    expect(r.ride_type).toBe("low_impact");
     expect(r.hr_zone_min).toEqual({ z1: 10, z2: 35 });
     expect(r.ftp_w).toBe(150);
     expect(r.power_zone_min!.z2).toBeGreaterThan(0);
@@ -106,7 +116,7 @@ describe("PelotonClient", () => {
     expect(out.rides[0]).toMatchObject({ ftp_w: 160, ftp_source: "estimated" });
     expect(calls.filter((x) => x === "/api/me")).toHaveLength(1);
     expect(m.get("v1:sean:peloton1:user")).toBe("u1");
-    expect(m.has("v1:sean:peloton1:ride:w2")).toBe(true);
+    expect(m.has("v1:sean:peloton1:ride2:w2")).toBe(true);
 
     // A new tool call: user id and rides come from KV.
     const again = api();

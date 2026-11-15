@@ -85,7 +85,44 @@ export type PelotonRide = {
   ftp_source: string | null;
   /** Minutes in Peloton power zones 1-7; null when no FTP is known. */
   power_zone_min: Record<string, number> | null;
+  /** Class type from the title, for comparing like with like. */
+  ride_type: RideType;
+  /** Best rolling average power over 5 and 20 minutes (null if the ride is shorter). */
+  best_5min_w: number | null;
+  best_20min_w: number | null;
+  /** avg_power_w / avg_hr — aerobic efficiency; compare only within one ride_type (endurance). */
+  efficiency: number | null;
 };
+
+export type RideType = "ftp_test" | "pz_max" | "pz_endurance" | "power_zone" | "warm_up" | "cool_down" | "low_impact" | "other";
+
+/** Pure: Peloton class title → ride type. */
+export function rideType(title: string | null): RideType {
+  const t = (title ?? "").toLowerCase();
+  if (/\bftp\b/.test(t)) return "ftp_test";
+  if (/power zone max|\bpz max\b/.test(t)) return "pz_max";
+  if (/power zone endurance|\bpze\b/.test(t)) return "pz_endurance";
+  if (/power zone|\bpz\b/.test(t)) return "power_zone";
+  if (/warm ?up/.test(t)) return "warm_up";
+  if (/cool ?down/.test(t)) return "cool_down";
+  if (/low impact|recovery/.test(t)) return "low_impact";
+  return "other";
+}
+
+/** Pure: best rolling-average power over `secs`, from samples every `everyN` seconds. */
+export function bestAverage(values: unknown[], secs: number, everyN: number): number | null {
+  const n = Math.round(secs / everyN);
+  const v = values.map((x) => num(x) ?? 0);
+  if (n <= 0 || v.length < n) return null;
+  let sum = 0;
+  for (let i = 0; i < n; i++) sum += v[i];
+  let best = sum;
+  for (let i = n; i < v.length; i++) {
+    sum += v[i] - v[i - n];
+    if (sum > best) best = sum;
+  }
+  return Math.round(best / n);
+}
 
 /** Peloton's power-zone bands as a fraction of FTP (lower bounds of zones 2-7). */
 const PZ_BOUNDS = [0.55, 0.75, 0.9, 1.05, 1.2, 1.5];
@@ -198,6 +235,10 @@ export function buildRide(w: PelotonWorkout, graph: Obj, ftp: { ftp: number | nu
     ftp_w: ftp.ftp,
     ftp_source: ftp.ftp ? ftp.source : null,
     power_zone_min: ftp.ftp && outputValues.length ? powerZoneMinutes(outputValues, ftp.ftp, everyN) : null,
+    ride_type: rideType(w.title),
+    best_5min_w: bestAverage(outputValues, 300, everyN),
+    best_20min_w: bestAverage(outputValues, 1200, everyN),
+    efficiency: avgW && num(hr?.average_value) ? Math.round((avgW / num(hr!.average_value)!) * 100) / 100 : null,
   };
 }
 
@@ -332,7 +373,7 @@ export class PelotonClient {
     let fetched = 0;
     let pending = false;
     for (const w of workouts) {
-      const k = this.key(`ride:${w.id}`);
+      const k = this.key(`ride2:${w.id}`);
       try {
         const hit = await this.o.cache?.get<PelotonRide>(k, "json");
         if (hit) { rides.push(hit); continue; }
