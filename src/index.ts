@@ -50,10 +50,9 @@ export class GoogleHealthMCP extends McpAgent<Env, Record<string, never>, Props>
       () => this.purgeCache(),
       { cache: this.env.HEALTH_CACHE, userId: () => this.props.email },
       () =>
-        this.env.PELOTON_USERNAME && this.env.PELOTON_PASSWORD
+        this.env.PELOTON_BEARER_TOKEN
           ? new PelotonClient({
-              username: this.env.PELOTON_USERNAME,
-              password: this.env.PELOTON_PASSWORD,
+              token: this.env.PELOTON_BEARER_TOKEN,
               cache: this.env.HEALTH_CACHE,
               userId: this.props.email,
               timeZone: this.env.TIME_ZONE || "Europe/London",

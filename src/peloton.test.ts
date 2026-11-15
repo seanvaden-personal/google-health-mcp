@@ -69,66 +69,55 @@ describe("peloton parsing", () => {
 });
 
 describe("PelotonClient", () => {
-  function api(opts: { expireFirst?: boolean } = {}) {
+  function api(opts: { badToken?: boolean } = {}) {
     const calls: string[] = [];
-    let expired = !!opts.expireFirst;
     const f = (async (url: string, init?: RequestInit) => {
       const u = new URL(url);
-      calls.push(`${init?.method ?? "GET"} ${u.pathname}`);
+      calls.push(u.pathname);
       const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "content-type": "application/json" } });
-      if (u.pathname === "/auth/login") {
-        const body = JSON.parse(String(init?.body));
-        if (body.password !== "pw") return json({ message: "bad" }, 401);
-        return json({ session_id: "sess", user_id: "u1" });
-      }
-      if (expired) { expired = false; return json({}, 401); }
-      const cookie = (init?.headers as Record<string, string>)?.Cookie;
-      if (cookie !== "peloton_session_id=sess") return json({}, 401);
+      const auth = (init?.headers as Record<string, string>)?.Authorization;
+      if (opts.badToken || auth !== "Bearer tok") return json({}, 401);
+      if (u.pathname === "/api/me") return json({ id: "u1", cycling_ftp: 0, estimated_cycling_ftp: 160 });
       if (u.pathname === "/api/user/u1/workouts") {
         const page = Number(u.searchParams.get("page"));
         if (page === 0) return json({ data: [workout("w3", START + 86400), workout("w2", START), workout("s1", START - 3600, { fitness_discipline: "strength" })], show_next: true });
         return json({ data: [workout("w1", START - 5 * 86400)], show_next: false });
       }
       if (u.pathname.startsWith("/api/workout/")) return json(graph);
-      if (u.pathname === "/api/me") return json({ cycling_ftp: 0, estimated_cycling_ftp: 160 });
       return json({}, 404);
     }) as unknown as typeof fetch;
     return { f, calls };
   }
   const now = () => (START + 3 * 86400) * 1000;
+  const mk = (f: typeof fetch, kv?: KVNamespace, token = "tok") =>
+    new PelotonClient({ token, cache: kv, userId: "sean", timeZone: "America/New_York", fetchImpl: f, now });
 
-  it("logs in once, pages back to the start date, caches settled rides", async () => {
+  it("uses the bearer token, pages back to the start date, caches settled rides", async () => {
     const { f, calls } = api();
     const { kv, m } = memKv();
-    const c = new PelotonClient({ username: "me", password: "pw", cache: kv, userId: "sean", timeZone: "America/New_York", fetchImpl: f, now });
-    const out = await c.rides("2026-11-14", "2026-11-15");
+    const out = await mk(f, kv).rides("2026-11-14", "2026-11-15");
     expect(out.pending).toBe(false);
     expect(out.rides.map((r) => r.id)).toEqual(["w2", "w3"]);
     expect(out.rides[0]).toMatchObject({ ftp_w: 160, ftp_source: "estimated" });
-    expect(calls.filter((x) => x.includes("/auth/login"))).toHaveLength(1);
+    expect(calls.filter((x) => x === "/api/me")).toHaveLength(1);
+    expect(m.get("v1:sean:peloton1:user")).toBe("u1");
     expect(m.has("v1:sean:peloton1:ride:w2")).toBe(true);
 
-    // Second client (new tool call): session and rides come from KV.
+    // A new tool call: user id and rides come from KV.
     const again = api();
-    const c2 = new PelotonClient({ username: "me", password: "pw", cache: kv, userId: "sean", timeZone: "America/New_York", fetchImpl: again.f, now });
-    await c2.rides("2026-11-14", "2026-11-15");
-    expect(again.calls.some((x) => x.includes("/auth/login") || x.includes("performance"))).toBe(false);
+    await mk(again.f, kv).rides("2026-11-14", "2026-11-15");
+    expect(again.calls.some((x) => x === "/api/me" || x.includes("performance"))).toBe(false);
   });
 
-  it("re-logs in when the cached session has expired", async () => {
-    const { f, calls } = api({ expireFirst: true });
-    const { kv } = memKv();
-    await kv.put("v1:sean:peloton1:session", JSON.stringify({ id: "sess", userId: "u1" }));
-    const c = new PelotonClient({ username: "me", password: "pw", cache: kv, userId: "sean", timeZone: "UTC", fetchImpl: f, now });
-    const ws = await c.listWorkouts("2026-11-14", "2026-11-15");
-    expect(ws.length).toBeGreaterThan(0);
-    expect(calls.filter((x) => x.includes("/auth/login"))).toHaveLength(1);
-  });
-
-  it("surfaces a login failure without leaking the password", async () => {
+  it("accepts a token pasted with the 'Bearer ' prefix", async () => {
     const { f } = api();
-    const c = new PelotonClient({ username: "me", password: "wrong-secret", userId: "sean", timeZone: "UTC", fetchImpl: f, now });
-    await expect(c.listWorkouts("2026-11-14", "2026-11-15")).rejects.toThrow(/Peloton login failed: HTTP 401/);
-    await expect(c.listWorkouts("2026-11-14", "2026-11-15")).rejects.not.toThrow(/wrong-secret/);
+    expect((await mk(f, undefined, "Bearer tok ").listWorkouts("2026-11-14", "2026-11-15")).length).toBeGreaterThan(0);
+  });
+
+  it("explains an expired token without echoing it", async () => {
+    const { f } = api({ badToken: true });
+    const p = mk(f, undefined, "secret-token").listWorkouts("2026-11-14", "2026-11-15");
+    await expect(p).rejects.toThrow(/rejected the bearer token \(HTTP 401\).*PELOTON_BEARER_TOKEN/);
+    await expect(mk(f, undefined, "secret-token").listWorkouts("2026-11-14", "2026-11-15")).rejects.not.toThrow(/secret-token/);
   });
 });
