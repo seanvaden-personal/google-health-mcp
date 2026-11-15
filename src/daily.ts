@@ -34,6 +34,10 @@ export type DailyRow = {
   fat_g: number | null;
   fiber_g: number | null;
   sugar_g: number | null;
+  /** Saturated fat summed from the day's logged food items. */
+  sat_fat_g: number | null;
+  /** True when a logged food item is oatmeal/oats; null when no food was logged. */
+  oatmeal: boolean | null;
   weight_lb: number | null;
   bf_pct: number | null;
 };
@@ -90,10 +94,17 @@ function classify(type: string): "skate" | "lift" | "walk" | "ride" | "other" {
   return "other";
 }
 
+/** Oatmeal or oats by name, but not oat milk, oat creamer or the like. */
+export function isOatmeal(name: string): boolean {
+  return /\boat(s|meal)?\b/i.test(name) && !/milk|creamer|bar\b|cookie/i.test(name);
+}
+
 /** Pure: merge raw API responses for one range into rows keyed by date. */
 export function buildRows(start: string, end: string, raw: {
   hrv: unknown[]; rhr: unknown[]; sleep: unknown[]; exercise: unknown[];
   azm: unknown[]; steps: unknown[]; nutrition: unknown[]; weight: unknown[]; bodyFat: unknown[];
+  /** Individual nutrition-log items (reconcile). The daily rollup omits sugar and saturated fat. */
+  foods?: unknown[];
 }): DailyRow[] {
   const rows = new Map<string, DailyRow>();
   for (let d = start; d <= end; d = nextDayIso(d)) {
@@ -101,7 +112,7 @@ export function buildRows(start: string, end: string, raw: {
       date: d, hrv_ms: null, rhr_bpm: null, sleep_h: null, deep_min: null, rem_min: null, nap_min: null, bed_h: null, wake_h: null,
       steps: null, zone_min: null, skate_min: 0, lift_min: 0, walk_min: 0, ride_min: 0, other_min: 0,
       kcal_in: null, protein_g: null, carbs_g: null, fat_g: null, fiber_g: null, sugar_g: null,
-      weight_lb: null, bf_pct: null,
+      sat_fat_g: null, oatmeal: null, weight_lb: null, bf_pct: null,
     });
   }
   const at = (d: string | null) => (d ? rows.get(d) : undefined);
@@ -200,6 +211,22 @@ export function buildRows(start: string, end: string, raw: {
     row.carbs_g = r1(num(n.totalCarbohydrate?.gramsSum));
     row.fat_g = r1(num(n.totalFat?.gramsSum));
   }
+  const foodSeen = new Set<string>();
+  // When items are available, they are the source of truth for sugar (the
+  // rollup rarely carries it); clear it so it is not counted twice.
+  if ((raw.foods ?? []).some((r) => points(r, "dataPoints").length)) for (const row of rows.values()) row.sugar_g = null;
+  for (const p of (raw.foods ?? []).flatMap((r) => points(r, "dataPoints"))) {
+    const n = p.nutritionLog;
+    if (!n) continue;
+    const k = String(p.dataPointName ?? "");
+    if (k) { if (foodSeen.has(k)) continue; foodSeen.add(k); }
+    const row = at(civil(n.interval?.civilStartTime?.date));
+    if (!row) continue;
+    const grams = (key: string) => num((n.nutrients ?? []).find((x: Obj) => x.nutrient === key)?.quantity?.grams) ?? 0;
+    row.sugar_g = r1((row.sugar_g ?? 0) + grams("SUGAR"));
+    row.sat_fat_g = r1((row.sat_fat_g ?? 0) + grams("SATURATED_FAT"));
+    row.oatmeal = (row.oatmeal ?? false) || isOatmeal(String(n.foodDisplayName ?? ""));
+  }
   for (const p of raw.weight.flatMap((r) => points(r, "rollupDataPoints"))) {
     const row = at(civil(p.civilStartTime?.date));
     const g = num(p.weight?.weightGramsAvg);
@@ -212,13 +239,13 @@ export function buildRows(start: string, end: string, raw: {
   return [...rows.values()];
 }
 
-/** Raw fetch of one block (about 9–20 upstream requests with paging). */
+/** Raw fetch of one block (about 10–22 upstream requests with paging). */
 async function fetchBlock(client: GoogleHealthClient, s: string, e: string) {
   const BY_DATE = { timeMember: "date" } as const;
   const SLEEP = { timeMember: "interval.end_time", physical: true } as const;
   {
     {
-      const [hrv, rhr, sleep, exercise, azm, steps, nutrition, weight, bodyFat] = await Promise.all([
+      const [hrv, rhr, sleep, exercise, azm, steps, nutrition, weight, bodyFat, foods] = await Promise.all([
         client.reconcile("daily-heart-rate-variability", s, e, BY_DATE),
         client.reconcile("daily-resting-heart-rate", s, e, BY_DATE),
         // Sleep is bucketed by wake time; widen by a day so a night that ends
@@ -230,10 +257,12 @@ async function fetchBlock(client: GoogleHealthClient, s: string, e: string) {
         client.dailyRollUp("nutrition-log", s, e),
         client.dailyRollUp("weight", s, e),
         client.dailyRollUp("body-fat", s, e),
+        // Item-level food log: the only place sugar, saturated fat and food names appear.
+        client.reconcile("nutrition-log", s, e),
       ]);
       return buildRows(s, e, {
         hrv: [hrv], rhr: [rhr], sleep: [sleep], exercise: [exercise], azm: [azm], steps: [steps],
-        nutrition: [nutrition], weight: [weight], bodyFat: [bodyFat],
+        nutrition: [nutrition], weight: [weight], bodyFat: [bodyFat], foods: [foods],
       });
     }
   }
@@ -262,7 +291,7 @@ export async function fetchDailyRows(
   let pending = false;
   for (const [s, e] of blocks(start, end)) {
     const settled = e < settledBefore;
-    const key = `v1:${opts.userId ?? "anon"}:daily3:${s}:${e}`;
+    const key = `v1:${opts.userId ?? "anon"}:daily4:${s}:${e}`;
     if (settled && opts.cache) {
       try {
         const hit = await opts.cache.get(key, "json");

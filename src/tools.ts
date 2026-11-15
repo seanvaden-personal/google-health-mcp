@@ -239,7 +239,7 @@ export function registerTools(
     "get_daily_metrics",
     {
       title: "Daily Metrics (compact)",
-      description: "One compact row per day over a long date range (up to ~400 days), including bedtime (bed_h: hours from midnight, negative = before midnight) and wake time (wake_h). If the response has pending: true, older months are still being prepared: call again with the same arguments to get the rest: HRV, resting HR, sleep hours/deep/REM/naps, steps, heart-zone minutes, exercise minutes by kind (skate, lift, walk, ride, other), food calories and macros, weight (lb) and body fat %. Built for dashboards and long-term trend analysis; use the specific tools for detail on a few days.",
+      description: "One compact row per day over a long date range (up to ~400 days), including bedtime (bed_h: hours from midnight, negative = before midnight) and wake time (wake_h). If the response has pending: true, older months are still being prepared: call again with the same arguments to get the rest: HRV, resting HR, sleep hours/deep/REM/naps, steps, heart-zone minutes, exercise minutes by kind (skate, lift, walk, ride, other), food calories and macros (incl. sugar and saturated fat), oatmeal (true if oats were logged that day), weight (lb) and body fat %. Built for dashboards and long-term trend analysis; use the specific tools for detail on a few days.",
       inputSchema: {
         start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe("Inclusive start, YYYY-MM-DD."),
         end_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe("Inclusive end, YYYY-MM-DD."),
