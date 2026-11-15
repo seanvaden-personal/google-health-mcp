@@ -10,6 +10,7 @@ import { GoogleHealthClient } from "./google-health";
 import { isoDaysAgo, todayIso } from "./dates";
 import { toLeanJson } from "./shape";
 import { fetchDailyRows } from "./daily";
+import { saveCheckin, listCheckins, deleteCheckin } from "./checkins";
 
 /**
  * Data type IDs in the Google Health API v4. The daily-aggregated metrics
@@ -237,7 +238,7 @@ export function registerTools(
     "get_daily_metrics",
     {
       title: "Daily Metrics (compact)",
-      description: "One compact row per day over a long date range (up to ~400 days). If the response has pending: true, older months are still being prepared: call again with the same arguments to get the rest: HRV, resting HR, sleep hours/deep/REM/naps, steps, heart-zone minutes, exercise minutes by kind (skate, lift, walk, ride, other), food calories and macros, weight (lb) and body fat %. Built for dashboards and long-term trend analysis; use the specific tools for detail on a few days.",
+      description: "One compact row per day over a long date range (up to ~400 days), including bedtime (bed_h: hours from midnight, negative = before midnight) and wake time (wake_h). If the response has pending: true, older months are still being prepared: call again with the same arguments to get the rest: HRV, resting HR, sleep hours/deep/REM/naps, steps, heart-zone minutes, exercise minutes by kind (skate, lift, walk, ride, other), food calories and macros, weight (lb) and body fat %. Built for dashboards and long-term trend analysis; use the specific tools for detail on a few days.",
       inputSchema: {
         start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe("Inclusive start, YYYY-MM-DD."),
         end_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe("Inclusive end, YYYY-MM-DD."),
@@ -255,6 +256,76 @@ export function registerTools(
           today: todayIso(timeZone),
         });
         return { content: [{ type: "text" as const, text: JSON.stringify(out) }] };
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+  );
+
+  const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+  const needStore = () => {
+    if (!store?.cache || !store.userId) throw new Error("Check-in storage is not configured on this server.");
+    return { kv: store.cache, user: store.userId() };
+  };
+
+  server.registerTool(
+    "log_checkin",
+    {
+      title: "Log daily check-in",
+      description: "Save today's (or a given day's) how-you-feel check-in: knee and elbow pain 0-5 (0 = none), energy 1-5 (5 = great), stress 1-5 (5 = high), and an optional short note. Saving the same date again replaces it. Only call this when the user gives you their check-in.",
+      inputSchema: {
+        date: DATE.describe("Day the check-in is for, YYYY-MM-DD (the user's local date)."),
+        knee: z.number().int().min(0).max(5).nullable().optional().describe("Knee pain 0-5."),
+        elbow: z.number().int().min(0).max(5).nullable().optional().describe("Elbow pain 0-5."),
+        energy: z.number().int().min(1).max(5).nullable().optional().describe("Energy 1-5."),
+        stress: z.number().int().min(1).max(5).nullable().optional().describe("Stress 1-5."),
+        note: z.string().max(200).nullable().optional().describe("Optional short note."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ date, knee, elbow, energy, stress, note }) => {
+      try {
+        const { kv, user } = needStore();
+        const c = { date, knee: knee ?? null, elbow: elbow ?? null, energy: energy ?? null, stress: stress ?? null, note: note ?? null, at: new Date().toISOString() };
+        await saveCheckin(kv, user, c);
+        return jsonResult({ saved: c });
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "get_checkins",
+    {
+      title: "Daily check-ins",
+      description: "Read saved daily check-ins (knee/elbow pain 0-5, energy 1-5, stress 1-5, note) over a date range, one row per day that has one.",
+      inputSchema: { start_date: DATE.describe("Inclusive start."), end_date: DATE.describe("Inclusive end.") },
+      annotations: READ_ONLY,
+    },
+    async ({ start_date, end_date }) => {
+      try {
+        const { kv, user } = needStore();
+        return { content: [{ type: "text" as const, text: JSON.stringify({ rows: await listCheckins(kv, user, start_date, end_date) }) }] };
+      } catch (err) {
+        return errorResult(err);
+      }
+    },
+  );
+
+  server.registerTool(
+    "delete_checkin",
+    {
+      title: "Delete a check-in",
+      description: "Delete the saved check-in for one date. Only when the user asks.",
+      inputSchema: { date: DATE.describe("Date of the check-in to delete.") },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ date }) => {
+      try {
+        const { kv, user } = needStore();
+        await deleteCheckin(kv, user, date);
+        return jsonResult({ deleted: date });
       } catch (err) {
         return errorResult(err);
       }

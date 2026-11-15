@@ -12,7 +12,7 @@ describe("daily", () => {
     expect(localDate("2026-11-13T03:50:00Z", "-18000s")).toBe("2026-11-12");
   });
   it("merges and dedupes", () => {
-    const night = { dataPointName: "n1", sleep: { interval: { endTime: "2026-11-13T13:50:00Z", endUtcOffset: "-18000s" }, metadata: { mainSleep: true }, summary: { minutesAsleep: "387", stagesSummary: [{ type: "DEEP", minutes: "73" }, { type: "REM", minutes: "119" }] } } };
+    const night = { dataPointName: "n1", sleep: { interval: { startTime: "2026-11-13T07:05:00Z", startUtcOffset: "-18000s", endTime: "2026-11-13T13:50:00Z", endUtcOffset: "-18000s" }, metadata: { mainSleep: true }, summary: { minutesAsleep: "387", stagesSummary: [{ type: "DEEP", minutes: "73" }, { type: "REM", minutes: "119" }] } } };
     const skate = { dataPointName: "e1", exercise: { interval: { startTime: "2026-11-10T18:04:43Z", startUtcOffset: "-18000s", endTime: "2026-11-10T19:33:30Z" }, exerciseType: "SKATEBOARDING", activeDuration: "5327.050s" } };
     const rows = buildRows("2026-11-10", "2026-11-13", {
       hrv: [{ dataPoints: [{ dailyHeartRateVariability: { date: { year: 2026, month: 11, day: 13 }, averageHeartRateVariabilityMilliseconds: 29.04 } }] }],
@@ -26,6 +26,8 @@ describe("daily", () => {
     const by = Object.fromEntries(rows.map((r) => [r.date, r]));
     expect(by["2026-11-13"].sleep_h).toBe(6.5);
     expect(by["2026-11-13"].deep_min).toBe(73);
+    expect(by["2026-11-13"].wake_h).toBe(8.83);
+    expect(by["2026-11-13"].bed_h).toBe(2.08);
     expect(by["2026-11-13"].hrv_ms).toBe(29);
     expect(by["2026-11-10"].skate_min).toBe(89);
     expect(by["2026-11-10"].other_min).toBe(0);

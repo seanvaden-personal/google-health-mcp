@@ -17,6 +17,10 @@ export type DailyRow = {
   deep_min: number | null;
   rem_min: number | null;
   nap_min: number | null;
+  /** Bedtime in hours from midnight of the wake date: -0.5 = 11:30 PM, 1.5 = 1:30 AM. */
+  bed_h: number | null;
+  /** Wake time in hours after midnight. */
+  wake_h: number | null;
   steps: number | null;
   zone_min: number | null;
   skate_min: number;
@@ -94,7 +98,7 @@ export function buildRows(start: string, end: string, raw: {
   const rows = new Map<string, DailyRow>();
   for (let d = start; d <= end; d = nextDayIso(d)) {
     rows.set(d, {
-      date: d, hrv_ms: null, rhr_bpm: null, sleep_h: null, deep_min: null, rem_min: null, nap_min: null,
+      date: d, hrv_ms: null, rhr_bpm: null, sleep_h: null, deep_min: null, rem_min: null, nap_min: null, bed_h: null, wake_h: null,
       steps: null, zone_min: null, skate_min: 0, lift_min: 0, walk_min: 0, ride_min: 0, other_min: 0,
       kcal_in: null, protein_g: null, carbs_g: null, fat_g: null, fiber_g: null, sugar_g: null,
       weight_lb: null, bf_pct: null,
@@ -132,6 +136,19 @@ export function buildRows(start: string, end: string, raw: {
     const stage = (t: string) =>
       num((s.summary?.stagesSummary ?? []).find((x: Obj) => x.type === t)?.minutes) ?? 0;
     row.sleep_h = r1((row.sleep_h ?? 0) + asleep / 60);
+    const hoursOf = (t: string, off?: string) => {
+      const secs = off ? parseFloat(off) : 0;
+      const d = new Date(new Date(t).getTime() + (Number.isFinite(secs) ? secs : 0) * 1000);
+      return { date: d.toISOString().slice(0, 10), h: d.getUTCHours() + d.getUTCMinutes() / 60 };
+    };
+    if (s.interval.startTime) {
+      const b = hoursOf(s.interval.startTime, s.interval.startUtcOffset);
+      const bed = Math.round((b.date < row.date ? b.h - 24 : b.h) * 100) / 100;
+      if (row.bed_h === null || bed < row.bed_h) row.bed_h = bed;
+    }
+    const w = hoursOf(s.interval.endTime, s.interval.endUtcOffset);
+    const wake = Math.round(w.h * 100) / 100;
+    if (row.wake_h === null || wake > row.wake_h) row.wake_h = wake;
     row.deep_min = (row.deep_min ?? 0) + stage("DEEP");
     row.rem_min = (row.rem_min ?? 0) + stage("REM");
   }
@@ -245,7 +262,7 @@ export async function fetchDailyRows(
   let pending = false;
   for (const [s, e] of blocks(start, end)) {
     const settled = e < settledBefore;
-    const key = `v1:${opts.userId ?? "anon"}:daily2:${s}:${e}`;
+    const key = `v1:${opts.userId ?? "anon"}:daily3:${s}:${e}`;
     if (settled && opts.cache) {
       try {
         const hit = await opts.cache.get(key, "json");
