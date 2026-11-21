@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { PelotonClient, bestAverage, buildRide, dailyTotals, parseWorkout, powerZone, powerZoneMinutes, rideType } from "./peloton";
+import { AUTH_KEY, PelotonClient, bestAverage, buildRide, dailyTotals, parseWorkout, powerZone, powerZoneMinutes, rideType } from "./peloton";
 
 /** Minimal in-memory KV with the bits the client uses. */
 function memKv() {
@@ -134,5 +134,102 @@ describe("PelotonClient", () => {
     const p = mk(f, undefined, "secret-token").listWorkouts("2026-11-14", "2026-11-15");
     await expect(p).rejects.toThrow(/rejected the bearer token \(HTTP 401\).*PELOTON_BEARER_TOKEN/);
     await expect(mk(f, undefined, "secret-token").listWorkouts("2026-11-14", "2026-11-15")).rejects.not.toThrow(/secret-token/);
+  });
+});
+
+describe("PelotonClient refresh-token auth", () => {
+  const now = () => (START + 3 * 86400) * 1000;
+  /** Fake Auth0 + API. Refresh tokens are single-use: each renewal rotates rN → rN+1 and access aN+1. */
+  function fake(opts: { live?: string; rotate?: boolean; expiresIn?: number } = {}) {
+    let live = opts.live ?? "r0";
+    let gen = 0;
+    let accessOk = new Set<string>();
+    const calls: { path: string; body?: string }[] = [];
+    const json = (b: unknown, status = 200) => new Response(JSON.stringify(b), { status, headers: { "content-type": "application/json" } });
+    const f = (async (url: string, init?: RequestInit) => {
+      const u = new URL(url);
+      if (u.host === "auth.onepeloton.com") {
+        const body = String(init?.body ?? "");
+        calls.push({ path: u.pathname, body });
+        const p = new URLSearchParams(body);
+        if (p.get("grant_type") !== "refresh_token" || p.get("client_id") !== "web-client" || p.get("refresh_token") !== live) return json({ error: "invalid_grant" }, 403);
+        gen++;
+        const access = `a${gen}`;
+        accessOk = new Set([access]);
+        if (opts.rotate !== false) live = `r${gen}`;
+        return json({ access_token: access, ...(opts.rotate !== false ? { refresh_token: live } : {}), expires_in: opts.expiresIn ?? 172800, token_type: "Bearer" });
+      }
+      calls.push({ path: u.pathname });
+      const auth = (init?.headers as Record<string, string>)?.Authorization?.replace("Bearer ", "");
+      if (!auth || !accessOk.has(auth)) return json({}, 401);
+      if (u.pathname === "/api/me") return json({ id: "u1" });
+      if (u.pathname === "/api/user/u1/workouts") return json({ data: [workout("w2", START)], show_next: false });
+      return json({}, 404);
+    }) as unknown as typeof fetch;
+    return { f, calls, revoke: () => { accessOk = new Set(); }, live: () => live };
+  }
+  const mk = (f: typeof fetch, kv: KVNamespace | undefined, refreshToken = "r0", t = now) =>
+    new PelotonClient({ refreshToken, clientId: "web-client", cache: kv, userId: "sean", timeZone: "America/New_York", fetchImpl: f, now: t });
+  const auths = (calls: { path: string }[]) => calls.filter((c) => c.path === "/oauth/token").length;
+
+  it("renews with the seed, stores the rotated refresh token, and reuses the access token", async () => {
+    const api = fake();
+    const { kv, m } = memKv();
+    expect(await mk(api.f, kv).listWorkouts("2026-11-14", "2026-11-15")).toHaveLength(1);
+    const st = JSON.parse(m.get(AUTH_KEY)!);
+    expect(st).toMatchObject({ refresh_token: "r1", access_token: "a1" });
+    // Next tool call: no renewal while the access token is fresh.
+    const before = auths(api.calls);
+    await mk(api.f, kv).listWorkouts("2026-11-14", "2026-11-15");
+    expect(auths(api.calls)).toBe(before);
+  });
+
+  it("renews near expiry using the stored (rotated) token, not the spent seed", async () => {
+    const api = fake();
+    const { kv, m } = memKv();
+    await mk(api.f, kv).listWorkouts("2026-11-14", "2026-11-15");
+    const later = () => now() + 47.95 * 3600 * 1000; // inside the 10-minute skew
+    await mk(api.f, kv, "r0", later).listWorkouts("2026-11-14", "2026-11-15");
+    expect(JSON.parse(m.get(AUTH_KEY)!)).toMatchObject({ refresh_token: "r2", access_token: "a2" });
+  });
+
+  it("renews once and retries after a 401", async () => {
+    const api = fake();
+    const { kv } = memKv();
+    await mk(api.f, kv).listWorkouts("2026-11-14", "2026-11-15");
+    api.revoke();
+    expect(await mk(api.f, kv).listWorkouts("2026-11-14", "2026-11-15")).toHaveLength(1);
+    expect(auths(api.calls)).toBe(2);
+  });
+
+  it("a newly pasted seed replaces the stored chain", async () => {
+    const api = fake();
+    const { kv, m } = memKv();
+    await mk(api.f, kv).listWorkouts("2026-11-14", "2026-11-15");
+    const api2 = fake({ live: "fresh" });
+    await mk(api2.f, kv, "fresh").listWorkouts("2026-11-14", "2026-11-15");
+    expect(JSON.parse(m.get(AUTH_KEY)!).refresh_token).toBe("r1"); // api2 rotated fresh → r1
+    expect(auths(api2.calls)).toBe(1);
+  });
+
+  it("keeps the old refresh token when the response omits one", async () => {
+    const api = fake({ rotate: false });
+    const { kv, m } = memKv();
+    await mk(api.f, kv).listWorkouts("2026-11-14", "2026-11-15");
+    expect(JSON.parse(m.get(AUTH_KEY)!).refresh_token).toBe("r0");
+  });
+
+  it("explains a rejected refresh token without echoing it", async () => {
+    const api = fake({ live: "something-else" });
+    const { kv } = memKv();
+    const p = mk(api.f, kv, "secret-refresh").listWorkouts("2026-11-14", "2026-11-15");
+    await expect(p).rejects.toThrow(/refresh token was rejected \(invalid_grant\).*PELOTON_REFRESH_TOKEN/);
+    await expect(mk(api.f, kv, "secret-refresh").listWorkouts("2026-11-14", "2026-11-15")).rejects.not.toThrow(/secret-refresh/);
+  });
+
+  it("refuses to spend the single-use token without KV to store its replacement", async () => {
+    const api = fake();
+    await expect(mk(api.f, undefined).listWorkouts("2026-11-14", "2026-11-15")).rejects.toThrow(/HEALTH_CACHE/);
+    expect(auths(api.calls)).toBe(0);
   });
 });

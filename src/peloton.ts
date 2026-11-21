@@ -1,9 +1,11 @@
 /**
  * Peloton ride data via Peloton's unofficial web API (the same one the web app
- * uses), authenticated with a bearer token copied once from the logged-in web
- * app and stored as the PELOTON_BEARER_TOKEN Worker secret. (Peloton retired
- * the username/password /auth/login endpoint in 2026.) The token never leaves
- * the server; the Peloton user id is cached in HEALTH_CACHE.
+ * uses). Preferred auth: an Auth0 refresh token from one web login
+ * (PELOTON_REFRESH_TOKEN + PELOTON_CLIENT_ID), renewed automatically and
+ * rotated in HEALTH_CACHE. Fallback: a ~48 h bearer token copied from the web
+ * app (PELOTON_BEARER_TOKEN). (Peloton retired the username/password
+ * /auth/login endpoint in 2026.) Tokens never leave the server; the Peloton
+ * user id is cached in HEALTH_CACHE.
  *
  * Unofficial: Peloton can change auth or response shapes without notice, so
  * every field is read defensively and missing data comes back as null.
@@ -266,8 +268,12 @@ export function dailyTotals(workouts: PelotonWorkout[]): Map<string, PelotonDay>
 }
 
 export type PelotonOpts = {
-  /** Bearer token copied from the logged-in Peloton web app (Authorization header). */
-  token: string;
+  /** Bearer token copied from the logged-in Peloton web app (Authorization header). Fallback when no refresh token is set. */
+  token?: string;
+  /** Auth0 refresh token from a Peloton web login (seed). When set with `clientId`, access tokens renew themselves. */
+  refreshToken?: string;
+  /** Auth0 client id of the Peloton web app (from the same login's /oauth/token request). */
+  clientId?: string;
   cache?: KVNamespace;
   /** Scopes cache keys; same `v1:<user>:` prefix as the health cache so delete_my_data clears it. */
   userId: string;
@@ -279,6 +285,87 @@ export type PelotonOpts = {
 export const TOKEN_HELP =
   "Get a fresh one: log in at members.onepeloton.com, open DevTools → Network, click any api.onepeloton.com request, copy the Authorization header value after 'Bearer ', and save it as the PELOTON_BEARER_TOKEN Worker secret.";
 
+export const REFRESH_HELP =
+  "Re-seed it: open a private window, open DevTools → Network (Preserve log on), log in at members.onepeloton.com, select the POST to auth.onepeloton.com/oauth/token, copy refresh_token from its Response, close the private window, and save it as the PELOTON_REFRESH_TOKEN Worker secret.";
+
+const AUTH_URL = "https://auth.onepeloton.com/oauth/token";
+/** Global (not per-user) KV key for the rotating Peloton credentials; delete_my_data leaves it alone. */
+export const AUTH_KEY = "peloton-auth:v1";
+/** Renew this long before the access token's stated expiry. */
+const EXPIRY_SKEW_MS = 10 * 60 * 1000;
+
+type AuthState = { seed: string; refresh_token: string; access_token: string | null; expires_at: number };
+
+/** Short fingerprint of the seed refresh token, so a newly pasted secret replaces the stored chain. */
+async function fingerprint(s: string): Promise<string> {
+  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return [...new Uint8Array(d)].slice(0, 8).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Keeps a Peloton access token alive with Auth0 refresh tokens. Peloton's
+ * access tokens last ~48 h and refresh tokens are single-use (rotated on every
+ * renewal), so the newest refresh token is written to KV before the new access
+ * token is used. The secret is only the seed: once rotated, KV holds the live one.
+ */
+export class PelotonAuth {
+  private memo: Promise<string> | null = null;
+  constructor(
+    private readonly o: { refreshToken: string; clientId: string; cache?: KVNamespace; fetchImpl: typeof fetch; now: () => number },
+  ) {}
+
+  private async load(): Promise<AuthState> {
+    const seed = await fingerprint(this.o.refreshToken.trim());
+    let st: AuthState | null = null;
+    try { st = (await this.o.cache?.get<AuthState>(AUTH_KEY, "json")) ?? null; } catch { /* miss */ }
+    if (st && st.seed === seed) return st;
+    return { seed, refresh_token: this.o.refreshToken.trim(), access_token: null, expires_at: 0 };
+  }
+
+  /** A valid access token, renewing it when it is missing, near expiry, or `force`d (after a 401). */
+  async accessToken(force = false): Promise<string> {
+    if (!force && this.memo) return this.memo;
+    const p = this.resolve(force);
+    this.memo = p;
+    p.catch(() => { if (this.memo === p) this.memo = null; });
+    return p;
+  }
+
+  private async resolve(force: boolean): Promise<string> {
+    const st = await this.load();
+    if (!force && st.access_token && st.expires_at - EXPIRY_SKEW_MS > this.o.now()) return st.access_token;
+    return this.renew(st);
+  }
+
+  private async renew(st: AuthState): Promise<string> {
+    // Check before spending the single-use refresh token.
+    if (!this.o.cache) throw new Error("Peloton refresh needs the HEALTH_CACHE KV binding to store the rotated refresh token.");
+    const res = await this.o.fetchImpl(AUTH_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": "google-health-mcp" },
+      body: new URLSearchParams({ grant_type: "refresh_token", client_id: this.o.clientId, refresh_token: st.refresh_token }).toString(),
+    });
+    let j: Obj = {};
+    try { j = (await res.json()) as Obj; } catch { /* non-JSON */ }
+    if (!res.ok || !j.access_token) {
+      // Another request may have just rotated the chain: use its token if so.
+      const latest = await this.load();
+      if (latest.refresh_token !== st.refresh_token && latest.access_token && latest.expires_at > this.o.now()) return latest.access_token;
+      const code = typeof j.error === "string" ? j.error : `HTTP ${res.status}`;
+      throw new Error(`Peloton refresh token was rejected (${code}). ${REFRESH_HELP}`);
+    }
+    const next: AuthState = {
+      seed: st.seed,
+      // RFC 6749 §6: keep the old refresh token if the response omits a new one.
+      refresh_token: typeof j.refresh_token === "string" && j.refresh_token ? j.refresh_token : st.refresh_token,
+      access_token: String(j.access_token),
+      expires_at: this.o.now() + (num(j.expires_in) ?? 172800) * 1000,
+    };
+    await this.o.cache.put(AUTH_KEY, JSON.stringify(next));
+    return next.access_token!;
+  }
+}
+
 export class PelotonClient {
   private pelotonUserId: string | null = null;
   private me: Obj | null = null;
@@ -286,19 +373,33 @@ export class PelotonClient {
   private readonly f: typeof fetch;
   private readonly now: () => number;
 
+  private readonly auth: PelotonAuth | null;
+
   constructor(private readonly o: PelotonOpts) {
     this.f = o.fetchImpl ?? ((...a) => fetch(...a));
     this.now = o.now ?? (() => Date.now());
+    this.auth = o.refreshToken && o.clientId
+      ? new PelotonAuth({ refreshToken: o.refreshToken, clientId: o.clientId, cache: o.cache, fetchImpl: this.f, now: this.now })
+      : null;
   }
 
   private key(k: string) { return `v1:${this.o.userId}:peloton1:${k}`; }
 
   private async raw(path: string): Promise<Obj> {
-    const token = this.o.token.replace(/^Bearer\s+/i, "").trim();
-    const res = await this.f(`${API}${path}`, {
-      headers: { Authorization: `Bearer ${token}`, "Peloton-Platform": "web", "User-Agent": "google-health-mcp" },
-    });
-    if (res.status === 401 || res.status === 403) throw new Error(`Peloton rejected the bearer token (HTTP ${res.status}); it has probably expired. ${TOKEN_HELP}`);
+    const send = (token: string) =>
+      this.f(`${API}${path}`, {
+        headers: { Authorization: `Bearer ${token}`, "Peloton-Platform": "web", "User-Agent": "google-health-mcp" },
+      });
+    let res: Response;
+    if (this.auth) {
+      res = await send(await this.auth.accessToken());
+      // The stored access token can be revoked early: renew once and retry.
+      if (res.status === 401) res = await send(await this.auth.accessToken(true));
+      if (res.status === 401 || res.status === 403) throw new Error(`Peloton rejected a freshly renewed access token (HTTP ${res.status}). ${REFRESH_HELP}`);
+    } else {
+      res = await send((this.o.token ?? "").replace(/^Bearer\s+/i, "").trim());
+      if (res.status === 401 || res.status === 403) throw new Error(`Peloton rejected the bearer token (HTTP ${res.status}); it has probably expired. ${TOKEN_HELP}`);
+    }
     if (!res.ok) throw new Error(`Peloton GET ${path.split("?")[0]} failed: HTTP ${res.status}`);
     return (await res.json()) as Obj;
   }

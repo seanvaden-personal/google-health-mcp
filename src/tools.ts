@@ -130,7 +130,7 @@ export function registerTools(
   store?: { cache?: KVNamespace; userId?: () => string },
   getPeloton: () => PelotonClient | null = () => null,
 ) {
-  const NO_PELOTON = `Peloton is not configured: no PELOTON_BEARER_TOKEN secret on the Worker. ${TOKEN_HELP}`;
+  const NO_PELOTON = `Peloton is not configured: set PELOTON_REFRESH_TOKEN + PELOTON_CLIENT_ID (preferred, renews itself) or PELOTON_BEARER_TOKEN on the Worker. ${TOKEN_HELP}`;
 
   // The headline tool: one call to decide "should I train today?"
   server.registerTool(

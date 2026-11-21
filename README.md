@@ -113,13 +113,32 @@ Rules of thumb:
 `get_peloton_rides` and the `peloton_kj` / `peloton_min` / `peloton_avg_w`
 columns in `get_daily_metrics` read ride data from Peloton's **unofficial** web
 API (the workouts list and each workout's `performance_graph`). Peloton
-retired its username/password login in 2026, so it authenticates with a bearer
-token copied from the web app: log in at members.onepeloton.com, open DevTools →
-Network, click any `api.onepeloton.com` request, and copy the `Authorization`
-header value after `Bearer `. Save it as the Worker secret
-`PELOTON_BEARER_TOKEN` (reportedly valid for about a year; when it expires the
-tools say so). Completed rides are cached for a year and the Peloton user id
-for a week, both cleared by `delete_my_data`. Without the secret the Peloton
+retired its username/password login in 2026 and now signs in through Auth0,
+with access tokens that last about 48 hours.
+
+**Recommended: refresh token (renews itself).** Capture one login's Auth0
+response and the Worker keeps the access token alive on its own:
+
+1. Open a **private window** and DevTools → Network, with **Preserve log** on.
+2. Log in at members.onepeloton.com.
+3. Filter for `oauth/token` and select the `POST` to `auth.onepeloton.com/oauth/token`.
+   - From **Payload**, copy `client_id` → Worker secret `PELOTON_CLIENT_ID`.
+   - From **Response**, copy `refresh_token` → Worker secret `PELOTON_REFRESH_TOKEN`.
+4. **Close the private window right away.** Refresh tokens are single-use: if
+   that window renews its own session, the token you copied stops working.
+
+The secret is only the seed. Each renewal rotates the refresh token and the
+newest one is stored in `HEALTH_CACHE` (key `peloton-auth:v1`, not cleared by
+`delete_my_data`). Pasting a new `PELOTON_REFRESH_TOKEN` replaces the stored
+chain. On a 401 the Worker renews once and retries.
+
+**Fallback: bearer token (~48 h).** Open any `api.onepeloton.com` request in
+DevTools, copy the `Authorization` header value after `Bearer `, and save it as
+`PELOTON_BEARER_TOKEN`. Used only when the refresh-token secrets aren't set;
+when it expires the tools say so.
+
+Completed rides are cached for a year and the Peloton user id
+for a week, both cleared by `delete_my_data`. Without the secrets the Peloton
 tool returns a "not configured" error and the daily columns are null.
 
 Caveats: the API is undocumented and can break if Peloton changes its auth;
