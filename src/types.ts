@@ -32,4 +32,8 @@ export interface Env {
   ALLOWED_REDIRECT_URIS: string;
   /** Bearer token from the Peloton web app (Worker secret). Peloton tools are off when unset. */
   PELOTON_BEARER_TOKEN?: string;
+  /** Auth0 refresh token from one Peloton web login (Worker secret; seed only, the live one rotates in HEALTH_CACHE). */
+  PELOTON_REFRESH_TOKEN?: string;
+  /** Auth0 client id of the Peloton web app, from the same login's /oauth/token request. */
+  PELOTON_CLIENT_ID?: string;
 }
